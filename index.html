@@ -643,7 +643,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   // ---- 通信(Trystero) ----
-  var net = { room: null, act: null, peers: {} };
+  var net = { room: null, act: null, peers: {}, suspended: false };
   var APP_ID = "palca-counter-v1";
   function bc(msg, target) {
     if (!net.act) return;
@@ -688,11 +688,34 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     net.room = null; net.act = null; net.peers = {};
     if (S.rs) clearReset();
   }
+  // 仲介サーバーへの接続も閉じる(退出だけでは、接続が開いたままで、再接続も続くため)。再開は netJoin が行う
+  function netStop() {
+    netLeave();
+    var ps = window.PalcaSync;
+    if (!ps || !ps.pause) return;
+    try {
+      ps.pause();
+      var so = ps.sockets();
+      Object.keys(so).forEach(function (k) { try { so[k].close(); } catch (e) {} });
+    } catch (e) {}
+  }
+  // 画面が隠れて一定時間たったら、同期を中断する(電池を使わない)。戻ったら、つなぎ直して、ログから追いつく
+  var HIDE_MS = 30000;
+  function netSuspend() {
+    if (!net.room || net.suspended) return;
+    netStop(); net.suspended = true; syncUi();
+  }
+  function netResume() {
+    net.suspended = false;
+    if (S.sync) netJoin(S.sync.room, S.sync.pw); else syncUi();
+  }
   function netJoin(room, pw) {
     netLeave();
+    net.suspended = false;
     if (!window.PalcaSync) { syncUi(); return false; }
     try {
-      var r = window.PalcaSync.joinRoom({ appId: APP_ID, password: pw }, room);
+      if (window.PalcaSync.resume) window.PalcaSync.resume();
+      var r = window.PalcaSync.joinRoom({ appId: APP_ID, password: pw, relayConfig: { redundancy: 3 } }, room);
       net.room = r; net.act = r.makeAction("p");
       net.act.onMessage = function (data, meta) { onMsg(data, meta && meta.peerId); };
       r.onPeerJoin = function (id) { net.peers[id] = true; bc({ t: "h", have: S.have }, id); syncUi(); };
@@ -1115,7 +1138,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   // ---- 同期の設定(メニュー) ----
   function syncUi() {
     var on = !!net.room, n = Object.keys(net.peers).length;
-    $("sy-state").textContent = !window.PalcaSync ? "利用不可" : !on ? "未接続" : n ? (n + 1) + "台接続" : "接続待ち";
+    $("sy-state").textContent = !window.PalcaSync ? "利用不可" : net.suspended ? "一時停止" : !on ? "未接続" : n ? (n + 1) + "台接続" : "接続待ち";
     $("sy-room").disabled = on; $("sy-pw").disabled = on;
     if (on && S.sync) { $("sy-room").value = S.sync.room.toUpperCase(); $("sy-pw").value = S.sync.pw; }
     $("sy-btns").hidden = on; $("sy-btns2").hidden = !on;
@@ -1135,7 +1158,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     $("sy-room").value = room.toUpperCase(); $("sy-pw").value = pw;
     tryJoin(room, pw);
   });
-  $("sy-leave").addEventListener("click", function () { netLeave(); S.sync = null; save(); syncUi(); });
+  $("sy-leave").addEventListener("click", function () { netStop(); net.suspended = false; S.sync = null; save(); syncUi(); });
   $("sy-qr").addEventListener("click", function () {
     var box = $("sy-qrbox"), show = box.hidden;
     if (show && S.sync && window.PalcaSync) {
@@ -1144,9 +1167,23 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     box.hidden = !show;
     this.setAttribute("aria-pressed", show);
   });
+  var hideTimer = null, hiddenAt = 0;
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") bc({ t: "h", have: S.have });
+    if (document.visibilityState === "hidden") {
+      hiddenAt = Date.now();
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(netSuspend, HIDE_MS);
+    } else {
+      clearTimeout(hideTimer);
+      // 長く隠れていたら(タイマーが止められていた場合も含む)、つなぎ直す。短ければ、足りない分を確認するだけ
+      if (S.sync && (net.suspended || (hiddenAt && Date.now() - hiddenAt >= HIDE_MS))) netResume();
+      else bc({ t: "h", have: S.have });
+      hiddenAt = 0;
+    }
   });
+  // タブを閉じるとき(や、ページを離れるとき)は、先に退出して、相手に切れたことを早く知らせる
+  window.addEventListener("pagehide", function () { netLeave(); });
+  window.addEventListener("pageshow", function (e) { if (e.persisted && S.sync) netResume(); });
   applyTheme();
   applyLayout();
   render();

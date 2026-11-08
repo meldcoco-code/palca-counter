@@ -182,10 +182,19 @@ html:not(.land) .stage:not(.solo) .logpanel .t { display: inline; }
   font: inherit; font-size: 16px; width: 5.5em; padding: 8px 10px; border-radius: 10px; border: 1.5px solid var(--line);
   background: var(--bg); color: var(--fg); font-variant-numeric: tabular-nums;
 }
+:root { --sync: #56B4E9; } /* 同期の枠: 色の見分けがつきにくくても見えやすい青(Okabe-Ito) */
+:root[data-theme="light"] { --sync: #0072B2; }
+#sync-card { border: 2px solid var(--sync); }
+#sync-card .syf { flex-wrap: nowrap; }
+#sync-card .syf label { flex: none; min-width: 5.4em; }
+#sync-card .syhint { color: var(--muted); font-size: 12px; margin: 4px 0 0 calc(5.4em + 10px); }
+#sync-card input::placeholder { color: var(--muted); opacity: .6; }
+#sy-room { text-transform: uppercase; }
+#sync-card .tools.one { grid-template-columns: 1fr; }
 #sy-qrbox { background: #fff; padding: 8px; border-radius: 12px; width: 220px; max-width: 100%; margin: 10px auto 0; }
 #sy-qrbox svg { display: block; width: 100%; height: auto; }
 #sync-card .tools { margin-top: 8px; }
-#sync-card .setting { margin-top: 2px; }
+#sync-card .setting { margin-top: 8px; }
 ol.log {
   list-style: none; margin: 0; padding: 0 6px 0 0; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column;
   scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--muted) transparent;
@@ -294,17 +303,25 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   </div>
   <div class="card" id="sync-card">
     <h2>同期 <span id="sy-state">未接続</span></h2>
-    <div class="setting">
-      <label>部屋コード <input type="text" id="sy-room" maxlength="6" autocapitalize="off" autocomplete="off" spellcheck="false" style="width:6.5em"></label>
-      <label>パスワード <input type="text" id="sy-pw" inputmode="numeric" maxlength="4" autocomplete="off" style="width:5em"></label>
+    <div class="setting syf">
+      <label for="sy-room">部屋コード</label>
+      <input type="text" id="sy-room" maxlength="6" placeholder="英数字6桁" autocapitalize="characters" autocomplete="off" spellcheck="false" style="width:6.5em">
+    </div>
+    <div class="syhint" id="sy-hint">新しく作ると、ランダムで自動生成されます</div>
+    <div class="setting syf">
+      <label for="sy-pw">パスワード</label>
+      <input type="text" id="sy-pw" inputmode="numeric" maxlength="4" placeholder="数字4桁" autocomplete="off" style="width:5em">
     </div>
     <div class="tools two" id="sy-btns">
       <button class="tool" id="sy-new" type="button">新しく作る</button>
       <button class="tool" id="sy-join" type="button">つなぐ</button>
     </div>
-    <div class="tools two" id="sy-btns2" hidden>
-      <button class="tool" id="sy-qr" type="button" aria-pressed="false">QRを表示</button>
+    <div class="tools one" id="sy-btns2" hidden>
       <button class="tool warn" id="sy-leave" type="button">切断</button>
+    </div>
+    <div class="tools two">
+      <button class="tool" id="sy-qr" type="button" aria-pressed="false" disabled>QRコード生成</button>
+      <button class="tool" id="sy-copy" type="button" disabled>URLコピー</button>
     </div>
     <div id="sy-qrbox" hidden></div>
   </div>
@@ -1191,13 +1208,16 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   window.addEventListener("blur", clearPress);
   window.addEventListener("resize", function () { applyLayout(); layoutSteps(); fitLogSeconds(); });
   // ---- 同期の設定(メニュー) ----
+  function joinedUrl() { return S.sync ? location.href.split("#")[0] + "#r=" + S.sync.room + "&p=" + S.sync.pw : ""; }
   function syncUi() {
-    var on = !!net.room, n = Object.keys(net.peers).length;
+    var on = !!net.room, n = Object.keys(net.peers).length, joined = !!S.sync, url = joinedUrl();
     $("sy-state").textContent = !window.PalcaSync ? "利用不可" : net.suspended ? "一時停止" : !on ? "未接続" : n ? (n + 1) + "台接続" : "接続待ち";
-    $("sy-room").disabled = on; $("sy-pw").disabled = on;
-    if (on && S.sync) { $("sy-room").value = S.sync.room.toUpperCase(); $("sy-pw").value = S.sync.pw; }
-    $("sy-btns").hidden = on; $("sy-btns2").hidden = !on;
-    if (!on) { $("sy-qrbox").hidden = true; $("sy-qr").setAttribute("aria-pressed", "false"); }
+    $("sy-room").disabled = joined; $("sy-pw").disabled = joined;
+    if (joined) { $("sy-room").value = S.sync.room.toUpperCase(); $("sy-pw").value = S.sync.pw; }
+    $("sy-hint").hidden = joined;
+    $("sy-btns").hidden = joined; $("sy-btns2").hidden = !joined;
+    $("sy-qr").disabled = !url || !window.PalcaSync; $("sy-copy").disabled = !url;
+    if (!url) { $("sy-qrbox").hidden = true; $("sy-qr").setAttribute("aria-pressed", "false"); }
   }
   function normIn(v) { v = String(v || ""); try { v = v.normalize("NFKC"); } catch (e) {} return v.trim(); }
   function tryJoin(room, pw) {
@@ -1207,20 +1227,52 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     netJoin(room, pw);
   }
   function rnd(n, base) { var s = ""; for (var i = 0; i < n; i++) s += Math.floor(Math.random() * base).toString(base); return s; }
+  // 部屋コードの入力欄: 6桁まで、小文字を入れても大文字に置き換わる(全角も半角にする)
+  function fixRoom() {
+    var el = $("sy-room"), pos = el.selectionStart, v = normIn(el.value).replace(/\s+/g, "").toUpperCase().slice(0, 6);
+    if (v !== el.value) { el.value = v; try { el.setSelectionRange(pos, pos); } catch (e) {} }
+  }
+  $("sy-room").addEventListener("input", function (e) { if (!e.isComposing) fixRoom(); });
+  $("sy-room").addEventListener("compositionend", fixRoom);
   $("sy-join").addEventListener("click", function () { tryJoin($("sy-room").value, $("sy-pw").value); });
+  // 新しく作る: 部屋コードは、毎回ランダム。パスワードは、入力があればそれを使い、空欄ならランダム
   $("sy-new").addEventListener("click", function () {
-    var room = rnd(6, 16), pw = rnd(4, 10);
+    var typed = normIn($("sy-pw").value), pw;
+    if (typed === "") pw = rnd(4, 10);
+    else if (/^[0-9]{4}$/.test(typed)) pw = typed;
+    else { toast("パスワードは、数字4桁です(空欄ならランダムで作ります)"); return; }
+    var room = rnd(6, 16);
     $("sy-room").value = room.toUpperCase(); $("sy-pw").value = pw;
     tryJoin(room, pw);
   });
-  $("sy-leave").addEventListener("click", function () { netStop(); net.suspended = false; S.sync = null; save(); syncUi(); });
+  $("sy-leave").addEventListener("click", function () {
+    netStop(); net.suspended = false; S.sync = null; save();
+    $("sy-room").value = ""; $("sy-pw").value = "";
+    syncUi();
+  });
   $("sy-qr").addEventListener("click", function () {
-    var box = $("sy-qrbox"), show = box.hidden;
-    if (show && S.sync && window.PalcaSync) {
-      box.innerHTML = window.PalcaSync.qrSvg(location.origin + location.pathname + "#r=" + S.sync.room + "&p=" + S.sync.pw);
-    }
+    var url = joinedUrl(), box = $("sy-qrbox");
+    if (!url || !window.PalcaSync) return;
+    var show = box.hidden;
+    if (show) box.innerHTML = window.PalcaSync.qrSvg(url);
     box.hidden = !show;
     this.setAttribute("aria-pressed", show);
+  });
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(t);
+    return new Promise(function (res, rej) {
+      var ta = document.createElement("textarea"), done = false;
+      ta.value = t; ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta); ta.select();
+      try { done = document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta);
+      if (done) res(); else rej(new Error("copy"));
+    });
+  }
+  $("sy-copy").addEventListener("click", function () {
+    var url = joinedUrl();
+    if (!url) return;
+    copyText(url).then(function () { toast("URLをコピーしました"); }, function () { toast("コピーできませんでした"); });
   });
   var hideTimer = null, hiddenAt = 0;
   document.addEventListener("visibilitychange", function () {

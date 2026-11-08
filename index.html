@@ -1226,6 +1226,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   // メニューは、開いたときの傾きに合わせて回してあり、開いている間は固定。ボタンを押し続けている間、端末はその傾きのままなので、
   // 押した回数や順番によらず、「いまの傾き → 選んだ状態の傾き」で出す(左傾きで開いて、戻すまで押しても、左に傾いた絵が、まっすぐに戻る)
   var PHI = [0, -90, 90]; // 回転設定ごとの、端末の傾き(度。負=左へ、正=右へ)
+  var menuSyncTimer = null;
   $("rot").addEventListener("click", function () {
     // 切り替えの順番は、表示の向きを問わず常に 切 → 左傾き → 右傾き → 切(左を先に統一)。
     var prev = curRot(), next = (prev + 1) % 3;
@@ -1236,6 +1237,10 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     if (isPortrait()) S.rotP = next; else S.rotL = next;
     showTilt(from, from + d, d === 0 ? "そのままでお使いください" : next === 0 ? "傾きを戻してください" : next === 1 ? "左に傾けてください" : "右に傾けてください", "", wide);
     save(); applyLayout(); render();
+    // 案内が消えたあとに、メニューの向きを、選んだ状態に合わせる(案内どおりに傾けた人が、そのままメニューを読める)。
+    // 案内が消える前に続けて押したときは、端末がまだ動いていないので、向きは変えず、最後に押したあとで合わせる
+    clearTimeout(menuSyncTimer);
+    menuSyncTimer = setTimeout(syncMenuLayer, 2300);
   });
   $("swap").addEventListener("click", function () {
     S.swap = nextSwap(); save(); applyLayout(); render();

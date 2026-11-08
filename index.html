@@ -178,10 +178,14 @@ html:not(.land) .stage:not(.solo) .logpanel .t { display: inline; }
 .tool.warn.armed { background: var(--life); color: var(--panel); }
 .card { background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 12px; }
 .setting { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.setting input[type=number] {
+.setting input[type=number], .setting input[type=text] {
   font: inherit; font-size: 16px; width: 5.5em; padding: 8px 10px; border-radius: 10px; border: 1.5px solid var(--line);
   background: var(--bg); color: var(--fg); font-variant-numeric: tabular-nums;
 }
+#sy-qrbox { background: #fff; padding: 8px; border-radius: 12px; width: 220px; max-width: 100%; margin: 10px auto 0; }
+#sy-qrbox svg { display: block; width: 100%; height: auto; }
+#sync-card .tools { margin-top: 8px; }
+#sync-card .setting { margin-top: 2px; }
 ol.log {
   list-style: none; margin: 0; padding: 0 6px 0 0; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column;
   scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--muted) transparent;
@@ -288,6 +292,22 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     <div class="exrow mat" data-g="each" hidden><span class="exnm">素材</span><button class="chip" type="button" data-k="mat" data-m="2" data-s="plus" aria-pressed="false">+2</button><button class="chip" type="button" data-k="mat" data-m="3" data-s="plus" aria-pressed="false">+3</button><button class="chip" type="button" data-k="mat" data-m="4" data-s="plus" aria-pressed="false">+4</button><button class="chip" type="button" data-k="mat" data-m="5" data-s="plus" aria-pressed="false">+5</button></div>
     <div class="exrow mat" data-g="each" hidden><span class="exnm"></span><button class="chip" type="button" data-k="mat" data-m="2" data-s="minus" aria-pressed="false">−2</button><button class="chip" type="button" data-k="mat" data-m="3" data-s="minus" aria-pressed="false">−3</button><button class="chip" type="button" data-k="mat" data-m="4" data-s="minus" aria-pressed="false">−4</button><button class="chip" type="button" data-k="mat" data-m="5" data-s="minus" aria-pressed="false">−5</button></div>
   </div>
+  <div class="card" id="sync-card">
+    <h2>同期 <span id="sy-state">未接続</span></h2>
+    <div class="setting">
+      <label>部屋コード <input type="text" id="sy-room" maxlength="6" autocapitalize="off" autocomplete="off" spellcheck="false" style="width:6.5em"></label>
+      <label>パスワード <input type="text" id="sy-pw" inputmode="numeric" maxlength="4" autocomplete="off" style="width:5em"></label>
+    </div>
+    <div class="tools two" id="sy-btns">
+      <button class="tool" id="sy-new" type="button">新しく作る</button>
+      <button class="tool" id="sy-join" type="button">つなぐ</button>
+    </div>
+    <div class="tools two" id="sy-btns2" hidden>
+      <button class="tool" id="sy-qr" type="button" aria-pressed="false">QRを表示</button>
+      <button class="tool warn" id="sy-leave" type="button">切断</button>
+    </div>
+    <div id="sy-qrbox" hidden></div>
+  </div>
   <div class="card">
     <h2>スタート時の数値</h2>
     <div class="setting">
@@ -314,6 +334,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 <div class="toast" id="toast" hidden></div>
 </div>
 
+<script src="sync.js"></script>
 <script>
 (function () {
   var KEY = "palca-v3";
@@ -326,6 +347,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     mat: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="16" height="12" rx="2.5" fill="currentColor"/><ellipse cx="18" cy="12" rx="4" ry="6" fill="var(--panel)" stroke="currentColor" stroke-width="1.8"/><ellipse cx="18" cy="12" rx="1.5" ry="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 10h6M5 14h8" stroke="var(--panel)" stroke-width="1.4" stroke-linecap="round" opacity=".8"/></svg>'
   };
   var LOG_MAX = 20;
+  var INIT = [{ life: 10, food: 0, mat: 0 }, { life: 10, food: 0, mat: 0 }];
+  var C = null; // calc() の結果
   var OPS_MAX = 100;
   var ROT_LABELS = ["横画面・縦画面<small>切</small>", "横画面・縦画面<small>右</small>", "横画面・縦画面<small>左</small>"];
 
@@ -343,10 +366,12 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: 0,
       swap: "off", // off / both(二人) / p1(1Pのみ=自分) / p2(2Pのみ=相手)
       start: { life: 10, food: 0, mat: 0 },
-      base: [{ life: 10, food: 0, mat: 0 }, { life: 10, food: 0, mat: 0 }],
-      ops: []
+      dev: newId(), // この端末のID(同期で、操作の持ち主を区別する)
+      ents: [], // 操作ログ(全端末ぶん)
+      sync: null // {room, pw}: 前回つないだ部屋
     };
   }
+  function newId() { var s = ""; for (var i = 0; i < 8; i++) s += Math.floor(Math.random() * 16).toString(16); return s; }
 
   // 保存データの検証: 読み込んだ値はすべて、数値・列挙値の範囲に作り直す(文字列や想定外の形は捨てる)
   function num(v, d) { return typeof v === "number" && isFinite(v) && v >= 0 && v <= 999999 ? Math.floor(v) : d; }
@@ -366,15 +391,87 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       return { ts: e.ts, p: e.p, k: e.k, from: num(e.from, 0), to: num(e.to, 0) };
     });
   }
-  function applyOp(pl, e) {
-    if (e.r === 1) { pl[0] = clone(e.to); pl[1] = clone(e.to); }
-    else pl[e.p][e.k] = e.to;
+  // ---- 操作ログ(同期の本体) ----
+  // 各端末が、全端末の操作を持つ。1件 = 持ち主 d、通し番号 s、論理時計 c、時刻 ts と、次のどれか:
+  //   増減 {p,k,v} / 取り消し {u:[持ち主,番号]} / リセット {r:1, to:[1Pの数値,2Pの数値], cut:{持ち主:番号}}
+  // 現在の数値は、ログを(c, d, s)の順に並べて、最初から計算し直して決める。
+  // リセットの cut は「そのリセットが数えた範囲」で、番号がそれ以下の操作は、リセットより前として除く。
+  var HEX8 = /^[0-9a-f]{8}$/;
+  function isInt(v, lim) { return typeof v === "number" && isFinite(v) && Math.floor(v) === v && Math.abs(v) <= lim; }
+  function cleanHave(h) {
+    var o = {};
+    if (h && typeof h === "object") Object.keys(h).forEach(function (k) { if (HEX8.test(k) && isInt(h[k], 1e9) && h[k] > 0) o[k] = h[k]; });
+    return o;
   }
-  // 現在の数値 = 土台(base) + 操作ログを順に当てはめたもの
-  function derive(st) {
-    var pl = [clone(st.base[0]), clone(st.base[1])];
-    st.ops.forEach(function (e) { applyOp(pl, e); });
-    return pl;
+  function cleanEnt(e) {
+    if (!e || typeof e !== "object" || typeof e.d !== "string" || !HEX8.test(e.d)) return null;
+    if (!isInt(e.s, 1e9) || e.s < 1 || !isInt(e.c, 1e9) || e.c < 1 || typeof e.ts !== "number" || !isFinite(e.ts)) return null;
+    var o = { d: e.d, s: e.s, c: e.c, ts: e.ts };
+    if (e.r === 1) {
+      if (!Array.isArray(e.to) || e.to.length !== 2) return null;
+      var z = { life: 0, food: 0, mat: 0 };
+      o.r = 1; o.to = [cleanRes(e.to[0], z), cleanRes(e.to[1], z)]; o.cut = cleanHave(e.cut);
+      return o;
+    }
+    if (e.u !== undefined) {
+      if (!Array.isArray(e.u) || typeof e.u[0] !== "string" || !HEX8.test(e.u[0]) || !isInt(e.u[1], 1e9)) return null;
+      o.u = [e.u[0], e.u[1]];
+      return o;
+    }
+    if ((e.p !== 0 && e.p !== 1) || typeof e.k !== "string" || !Object.prototype.hasOwnProperty.call(KINDS, e.k) || !isInt(e.v, 999999) || e.v === 0) return null;
+    o.p = e.p; o.k = e.k; o.v = e.v;
+    return o;
+  }
+  function entKey(e) { return e.d + ":" + e.s; }
+  function cmpEnt(a, b) { return a.c - b.c || (a.d < b.d ? -1 : a.d > b.d ? 1 : 0) || a.s - b.s; }
+  function cleanEnts(a) {
+    var out = [], seen = {};
+    if (!Array.isArray(a)) return out;
+    a.forEach(function (x) { var e = cleanEnt(x); if (e && !seen[entKey(e)]) { seen[entKey(e)] = 1; out.push(e); } });
+    return out;
+  }
+  function cleanSync(o) {
+    return o && typeof o === "object" && typeof o.room === "string" && /^[0-9a-f]{6}$/.test(o.room) && typeof o.pw === "string" && /^[0-9]{4}$/.test(o.pw) ? { room: o.room, pw: o.pw } : null;
+  }
+  // ログから、いまの数値・表示するログ・「元に戻す」の対象を計算する
+  function calc() {
+    var es = S.ents.slice().sort(cmpEnt), undone = {}, R = null, adds = [], pl, vis = [], last = null, mark = {};
+    es.forEach(function (e) { if (e.u) undone[e.u[0] + ":" + e.u[1]] = true; });
+    es.forEach(function (e) { if (e.r === 1 && !undone[entKey(e)]) R = e; });
+    pl = R ? clone(R.to) : clone(INIT);
+    es.forEach(function (e) {
+      if (e.u || e.r === 1 || undone[entKey(e)]) return;
+      if (R && e.s <= (R.cut[e.d] || 0)) return;
+      adds.push(e); mark[entKey(e)] = true;
+    });
+    adds.forEach(function (e) {
+      var f = pl[e.p][e.k], t = Math.max(0, f + e.v);
+      pl[e.p][e.k] = t; vis.push({ ts: e.ts, p: e.p, k: e.k, from: f, to: t });
+    });
+    es.forEach(function (e) { if (e === R || mark[entKey(e)]) last = e; });
+    return { players: pl, vis: vis, last: last, R: R };
+  }
+  function recalc() { C = calc(); S.players = C.players; }
+  function reindex() {
+    S.keys = {}; S.have = {}; S.lc = 0;
+    S.ents.forEach(function (e) { S.keys[entKey(e)] = 1; if (e.s > (S.have[e.d] || 0)) S.have[e.d] = e.s; if (e.c > S.lc) S.lc = e.c; });
+  }
+  function addEnt(e) {
+    if (S.keys[entKey(e)]) return false;
+    S.ents.push(e); S.keys[entKey(e)] = 1;
+    if (e.s > (S.have[e.d] || 0)) S.have[e.d] = e.s;
+    if (e.c > S.lc) S.lc = e.c;
+    return true;
+  }
+  // 旧形式(土台 base + 操作 ops)から、新しいログに作り直す
+  function migrate(r, p, b) {
+    var base = [cleanRes(b[0], INIT[0]), cleanRes(b[1], INIT[1])], ops = cleanOps(p.ops), seq = 0;
+    function push(f) { seq++; f.d = r.dev; f.s = seq; f.c = seq; r.ents.push(f); }
+    if (JSON.stringify(base) !== JSON.stringify(INIT)) push({ ts: (ops.length ? ops[0].ts : Date.now()) - 1, r: 1, to: base, cut: {} });
+    ops.forEach(function (o) {
+      if (o.r === 1) { var cut = {}; cut[r.dev] = seq; push({ ts: o.ts, r: 1, to: [clone(o.to), clone(o.to)], cut: cut }); }
+      else if (o.to !== o.from) push({ ts: o.ts, p: o.p, k: o.k, v: o.to - o.from });
+    });
   }
   function emptyExtra() { return { life: { plus: [], minus: [] }, food: { plus: [], minus: [] }, mat: { plus: [], minus: [] } }; }
   function cleanAmts(a) { return Array.isArray(a) ? [2, 3, 4, 5].filter(function (v) { return a.indexOf(v) >= 0; }) : []; }
@@ -389,8 +486,9 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var d = defaults();
     if (!p || typeof p !== "object") return d;
     var b = Array.isArray(p.base) ? p.base : p.players; // 旧形式(players/log/undo)は、数値だけ引き継ぐ
-    if (!Array.isArray(b) || b.length !== 2) return d;
-    return {
+    var hasEnts = Array.isArray(p.ents);
+    if (!hasEnts && (!Array.isArray(b) || b.length !== 2)) return d;
+    var out = {
       mode: p.mode === "solo" ? "solo" : "two",
       theme: p.theme === "light" ? "light" : "dark",
       night: p.night === true,
@@ -403,9 +501,12 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: cleanRot(p.rotL),
       swap: p.swap === true || p.swap === "both" ? "both" : (p.swap === "p1" || p.swap === "p2" ? p.swap : "off"),
       start: cleanRes(p.start, d.start),
-      base: [cleanRes(b[0], d.base[0]), cleanRes(b[1], d.base[1])],
-      ops: Array.isArray(p.ops) ? cleanOps(p.ops) : []
+      dev: typeof p.dev === "string" && HEX8.test(p.dev) ? p.dev : d.dev,
+      ents: hasEnts ? cleanEnts(p.ents) : [],
+      sync: cleanSync(p.sync)
     };
+    if (!hasEnts) migrate(out, p, b);
+    return out;
   }
 
   var S = defaults();
@@ -413,7 +514,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var raw = localStorage.getItem(KEY);
     if (raw) S = cleanState(JSON.parse(raw));
   } catch (e) {}
-  S.players = derive(S);
+  reindex(); recalc();
+  S.rs = null; // リセット待機の状態(保存しない)
   S.extraEdit = 0; // 個別設定で編集中の対象(0=自分, 1=相手)。保存しない
   // 1P/2P共通・±同時のとき、個別の内容は残しておく。破棄(=共通の設定と同じにする)するのは、
   // その状態でメニューを閉じたときと、その状態で ±2〜±5 の設定を変えたとき。切り替えを繰り返しただけでは破棄しない
@@ -425,7 +527,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   discardIndividual();
   function save() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, base: S.base, ops: S.ops }));
+      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, dev: S.dev, ents: S.ents, sync: S.sync }));
     } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
@@ -461,43 +563,146 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
   function escapeHtml(s) { return s.replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
-  function pushOp(e) {
-    S.ops.push(e);
-    applyOp(S.players, e);
-    // 100件を超えたら、いちばん古い操作を土台の数値に反映してから消す
-    while (S.ops.length > OPS_MAX) applyOp(S.base, S.ops.shift());
+  // ---- 操作(ログに足して、全端末に送る) ----
+  function append(f) {
+    f.d = S.dev; f.s = (S.have[S.dev] || 0) + 1; f.c = S.lc + 1; f.ts = Date.now();
+    addEnt(f); recalc(); save(); render();
+    bc({ t: "e", l: [f] });
   }
 
   function change(pi, kind, d) {
+    if (S.rs) { toast("リセット待機中です"); return; }
     var before = S.players[pi][kind];
     var after = Math.max(0, before + d);
     if (after === before) return;
-    pushOp({ ts: Date.now(), p: pi, k: kind, from: before, to: after });
-    save(); render();
+    append({ p: pi, k: kind, v: after - before });
   }
 
   function undo() {
-    if (!S.ops.length) return;
-    S.ops.pop();
-    S.players = derive(S);
-    save(); render();
+    if (S.rs) { toast("リセット待機中です"); return; }
+    if (!C.last) return;
+    append({ u: [C.last.d, C.last.s] });
   }
 
-  function resetClick() {
+  function canUndo() { return !!C.last; }
+
+  function doReset() {
+    var cut = {};
+    Object.keys(S.have).forEach(function (k) { cut[k] = S.have[k]; });
     S.night = false;
-    pushOp({ ts: Date.now(), r: 1, to: clone(S.start) });
-    save(); render();
+    append({ r: 1, to: [clone(S.start), clone(S.start)], cut: cut });
+  }
+
+  // リセット: 同期中は、全端末が待機に入ってから実行する(待機は10秒でタイムアウト)
+  var RESET_WAIT = 10000;
+  function clearReset() {
+    if (S.rs) { clearTimeout(S.rs.timer); S.rs = null; }
+    render();
+  }
+  function armReset(id, init, need) {
+    S.rs = { id: id, init: init, need: need || {}, got: {}, timer: null };
+    S.rs.timer = setTimeout(function () {
+      if (S.rs && S.rs.id === id) {
+        var mine = S.rs.init;
+        clearReset();
+        if (mine) bc({ t: "x", id: id });
+        toast("リセットできませんでした(応答なし)");
+      }
+    }, RESET_WAIT);
+    render();
+  }
+  function resetClick() {
+    if (S.rs) return;
+    var ids = Object.keys(net.peers);
+    if (!net.room || !ids.length) { doReset(); return; }
+    var need = {};
+    ids.forEach(function (i) { need[i] = true; });
+    var id = newId();
+    armReset(id, true, need);
+    bc({ t: "q", id: id });
+    tryFinish();
+  }
+  // 要求した端末: 全員の準備(待機に入った時点までの操作)が自分に届いたら、実行する
+  function tryFinish() {
+    var rs = S.rs;
+    if (!rs || !rs.init) return;
+    var ok = true;
+    Object.keys(rs.need).forEach(function (pid) {
+      if (!net.peers[pid]) return; // 抜けた端末は待たない
+      var h = rs.got[pid];
+      if (!h) { ok = false; return; }
+      Object.keys(h).forEach(function (dv) { if ((S.have[dv] || 0) < h[dv]) ok = false; });
+    });
+    if (ok) { clearReset(); doReset(); }
+  }
+
+  // ---- 通信(Trystero) ----
+  var net = { room: null, act: null, peers: {} };
+  var APP_ID = "palca-counter-v1";
+  function bc(msg, target) {
+    if (!net.act) return;
+    try { if (target) net.act.send(msg, { target: target }); else net.act.send(msg); } catch (e) {}
+  }
+  function sendEnts(list, target) {
+    for (var i = 0; i < list.length; i += 200) bc({ t: "e", l: list.slice(i, i + 200) }, target);
+  }
+  function onMsg(m, from) {
+    if (!m || typeof m !== "object") return;
+    if (m.t === "h") { // 相手が持っている番号を受け取って、足りない分を送る
+      var have = cleanHave(m.have);
+      var out = S.ents.filter(function (e) { return e.s > (have[e.d] || 0); });
+      if (out.length) sendEnts(out, from);
+    } else if (m.t === "e" && Array.isArray(m.l)) {
+      var fresh = 0, gotReset = false;
+      m.l.slice(0, 200).forEach(function (x) {
+        var e = cleanEnt(x);
+        if (e && addEnt(e)) { fresh++; if (e.r === 1) gotReset = true; }
+      });
+      if (fresh) {
+        if (gotReset) S.night = false;
+        if (S.rs && gotReset) { clearTimeout(S.rs.timer); S.rs = null; }
+        recalc(); save(); render(); tryFinish();
+      }
+    } else if (m.t === "q" && typeof m.id === "string" && HEX8.test(m.id)) { // リセットの要求
+      if (S.rs) {
+        if (S.rs.id === m.id || S.rs.id < m.id) return; // 同時に押したときは、小さい番号を優先
+        clearTimeout(S.rs.timer);
+      }
+      armReset(m.id, false);
+      bc({ t: "r", id: m.id, have: S.have }, from);
+    } else if (m.t === "r" && S.rs && S.rs.init && S.rs.id === m.id) {
+      S.rs.got[from] = cleanHave(m.have);
+      tryFinish();
+    } else if (m.t === "x" && S.rs && S.rs.id === m.id) {
+      clearReset();
+      toast("リセットは取り消されました");
+    }
+  }
+  function netLeave() {
+    if (net.room) { try { net.room.leave(); } catch (e) {} }
+    net.room = null; net.act = null; net.peers = {};
+    if (S.rs) clearReset();
+  }
+  function netJoin(room, pw) {
+    netLeave();
+    if (!window.PalcaSync) { syncUi(); return false; }
+    try {
+      var r = window.PalcaSync.joinRoom({ appId: APP_ID, password: pw }, room);
+      net.room = r; net.act = r.makeAction("p");
+      net.act.onMessage = function (data, meta) { onMsg(data, meta && meta.peerId); };
+      r.onPeerJoin = function (id) { net.peers[id] = true; bc({ t: "h", have: S.have }, id); syncUi(); };
+      r.onPeerLeave = function (id) {
+        delete net.peers[id];
+        if (S.rs && !S.rs.init) { /* 要求した端末が抜けたら、待機はタイムアウトに任せる */ }
+        tryFinish(); syncUi();
+      };
+    } catch (e) { net.room = null; net.act = null; toast("同期を開始できませんでした"); syncUi(); return false; }
+    S.sync = { room: room, pw: pw }; save(); syncUi();
+    return true;
   }
 
   // 表示するログ: 最後のリセットより後の操作のうち、新しい順に最大20件
-  function visLog() {
-    var out = [];
-    for (var i = S.ops.length - 1; i >= 0 && out.length < LOG_MAX; i--) {
-      if (S.ops[i].r === 1) break;
-      out.push(S.ops[i]);
-    }
-    return out;
-  }
+  function visLog() { return C.vis.slice().reverse().slice(0, LOG_MAX); }
 
   function stepBtn(pi, kind, d) {
     return '<button type="button" class="step ' + (d > 0 ? "plus" : "minus") + '" data-p="' + pi + '" data-k="' + kind + '" data-d="' + d +
@@ -662,8 +867,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     return '<aside class="logpanel" aria-label="変更ログ"><h2><span>ログ</span>' +
       (pi === 0 ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
       '</h2><ol class="log">' + logItems(list, false) + "</ol>" +
-      (S.mode === "solo" ? '<div class="logtools"><button type="button" class="lt" data-act="undo"' + (S.ops.length ? "" : " disabled") + '>↶ 戻す</button>' +
-        '<button type="button" class="lt warn" data-act="reset">リセット</button></div>' : "") + "</aside>";
+      (S.mode === "solo" ? '<div class="logtools"><button type="button" class="lt" data-act="undo"' + (canUndo() ? "" : " disabled") + '>↶ 戻す</button>' +
+        '<button type="button" class="lt warn" data-act="reset">' + (S.rs ? "待機中…" : "リセット") + '</button></div>' : "") + "</aside>";
   }
 
   function render() {
@@ -678,8 +883,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     });
     html += '<div class="side"><button type="button" class="sbtn sm" data-menu aria-label="メニューを開く">⋯</button>' +
       '<button type="button" class="sbtn night" data-act="night" aria-pressed="' + S.night + '" aria-label="夜">夜</button>' +
-      '<button type="button" class="sbtn" data-act="undo"' + (S.ops.length ? "" : " disabled") + '>元に戻す</button>' +
-      '<button type="button" class="sbtn warn" data-act="reset">リセット</button></div>';
+      '<button type="button" class="sbtn" data-act="undo"' + (canUndo() ? "" : " disabled") + '>元に戻す</button>' +
+      '<button type="button" class="sbtn warn" data-act="reset">' + (S.rs ? "待機中…" : "リセット") + '</button></div>';
     $("stage").innerHTML = html;
     $("stage").classList.toggle("solo", solo);
     $("stage").classList.toggle("center", S.center);
@@ -902,9 +1107,51 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   document.addEventListener("pointercancel", clearPress);
   window.addEventListener("blur", clearPress);
   window.addEventListener("resize", function () { applyLayout(); layoutSteps(); fitLogSeconds(); });
+  // ---- 同期の設定(メニュー) ----
+  function syncUi() {
+    var on = !!net.room, n = Object.keys(net.peers).length;
+    $("sy-state").textContent = !window.PalcaSync ? "利用不可" : !on ? "未接続" : n ? (n + 1) + "台接続" : "接続待ち";
+    $("sy-room").disabled = on; $("sy-pw").disabled = on;
+    if (on && S.sync) { $("sy-room").value = S.sync.room.toUpperCase(); $("sy-pw").value = S.sync.pw; }
+    $("sy-btns").hidden = on; $("sy-btns2").hidden = !on;
+    if (!on) { $("sy-qrbox").hidden = true; $("sy-qr").setAttribute("aria-pressed", "false"); }
+  }
+  function normIn(v) { v = String(v || ""); try { v = v.normalize("NFKC"); } catch (e) {} return v.trim(); }
+  function tryJoin(room, pw) {
+    room = normIn(room).toLowerCase(); pw = normIn(pw);
+    if (!/^[0-9a-f]{6}$/.test(room)) { toast("部屋コードは、16進数6桁(0〜9、A〜F)です"); return; }
+    if (!/^[0-9]{4}$/.test(pw)) { toast("パスワードは、数字4桁です"); return; }
+    netJoin(room, pw);
+  }
+  function rnd(n, base) { var s = ""; for (var i = 0; i < n; i++) s += Math.floor(Math.random() * base).toString(base); return s; }
+  $("sy-join").addEventListener("click", function () { tryJoin($("sy-room").value, $("sy-pw").value); });
+  $("sy-new").addEventListener("click", function () {
+    var room = rnd(6, 16), pw = rnd(4, 10);
+    $("sy-room").value = room.toUpperCase(); $("sy-pw").value = pw;
+    tryJoin(room, pw);
+  });
+  $("sy-leave").addEventListener("click", function () { netLeave(); S.sync = null; save(); syncUi(); });
+  $("sy-qr").addEventListener("click", function () {
+    var box = $("sy-qrbox"), show = box.hidden;
+    if (show && S.sync && window.PalcaSync) {
+      box.innerHTML = window.PalcaSync.qrSvg(location.origin + location.pathname + "#r=" + S.sync.room + "&p=" + S.sync.pw);
+    }
+    box.hidden = !show;
+    this.setAttribute("aria-pressed", show);
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") bc({ t: "h", have: S.have });
+  });
   applyTheme();
   applyLayout();
   render();
+  syncUi();
+  // QR(または共有のアドレス)から開いたときは、そのまま部屋につなぐ。前回の部屋があれば、つなぎ直す
+  (function () {
+    var m = /^#r=([0-9a-fA-F]{6})&p=([0-9]{4})$/.exec(location.hash);
+    if (m) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} netJoin(m[1].toLowerCase(), m[2]); }
+    else if (S.sync) netJoin(S.sync.room, S.sync.pw);
+  })();
 })();
 </script>
 

@@ -1222,20 +1222,19 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     if ($("sheet").hidden) syncMenuLayer();
     syncCenter();
   }
-  // 傾きの案内: 絵は、「いま端末が傾いている向き」から「次に傾けてほしい向き」へ動く。
-  // メニュー層は、開いた時点の傾きに合わせて回してあり、層の中が、そのまま、ユーザーから見た向きになる。
-  // (開いたまま続けて切り替えたときだけ、層と実際の傾きがずれるので、そのずれを引く)
+  // 傾きの案内: 絵は、「メニューを開いたときの端末の傾き」から、「いま選んだ状態の傾き」へ動く。
+  // メニューは、開いたときの傾きに合わせて回してあり、開いている間は固定。ボタンを押し続けている間、端末はその傾きのままなので、
+  // 押した回数や順番によらず、「いまの傾き → 選んだ状態の傾き」で出す(左傾きで開いて、戻すまで押しても、左に傾いた絵が、まっすぐに戻る)
   var PHI = [0, -90, 90]; // 回転設定ごとの、端末の傾き(度。負=左へ、正=右へ)
   $("rot").addEventListener("click", function () {
     // 切り替えの順番は、表示の向きを問わず常に 切 → 左傾き → 右傾き → 切(左を先に統一)。
     var prev = curRot(), next = (prev + 1) % 3;
-    var ml = $("menuLayer").classList, L = ml.contains("ml1") ? 1 : ml.contains("ml2") ? 2 : 0; // メニュー層の向き
+    var ml = $("menuLayer").classList, L = ml.contains("ml1") ? 1 : ml.contains("ml2") ? 2 : 0; // メニューを開いたときの傾き
     var wide = !isPortrait(); // 絵の形: ブラウザが縦ならスマホ、横なら横向きのタブレット
-    var d = ((PHI[next] - PHI[prev] + 540) % 360) - 180; // いまの傾きから次の傾きへ、傾け直す量(最短。180度は右回り)
-    if (d === -180) d = 180;
-    var from = PHI[L], to = from + d; // 通常(層の向き=いまの傾き)なら、from=いまの傾き、to=次の傾き
+    var from = PHI[L], d = PHI[next] - from;
+    if (d === 180 || d === -180) d = from < 0 ? 180 : -180; // 左右の入れ替えは、まっすぐを通る向きに回す
     if (isPortrait()) S.rotP = next; else S.rotL = next;
-    showTilt(from, to, next === 0 ? "傾きを戻してください" : next === 1 ? "左に傾けてください" : "右に傾けてください", "", wide);
+    showTilt(from, from + d, d === 0 ? "そのままでお使いください" : next === 0 ? "傾きを戻してください" : next === 1 ? "左に傾けてください" : "右に傾けてください", "", wide);
     save(); applyLayout(); render();
   });
   $("swap").addEventListener("click", function () {

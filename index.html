@@ -393,7 +393,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
   // ---- 操作ログ(同期の本体) ----
   // 各端末が、全端末の操作を持つ。1件 = 持ち主 d、通し番号 s、論理時計 c、時刻 ts と、次のどれか:
-  //   増減 {p,k,v} / 取り消し {u:[持ち主,番号]} / リセット {r:1, to:[1Pの数値,2Pの数値], cut:{持ち主:番号}}
+  //   増減 {p,k,v} / 夜 {n:1|0} / 取り消し {u:[持ち主,番号]} / リセット {r:1, to:[1Pの数値,2Pの数値], cut:{持ち主:番号}}
   // 現在の数値は、ログを(c, d, s)の順に並べて、最初から計算し直して決める。
   // リセットの cut は「そのリセットが数えた範囲」で、番号がそれ以下の操作は、リセットより前として除く。
   var HEX8 = /^[0-9a-f]{8}$/;
@@ -413,6 +413,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       o.r = 1; o.to = [cleanRes(e.to[0], z), cleanRes(e.to[1], z)]; o.cut = cleanHave(e.cut);
       return o;
     }
+    if (e.n !== undefined) { o.n = e.n === 1 ? 1 : 0; return o; }
     if (e.u !== undefined) {
       if (!Array.isArray(e.u) || typeof e.u[0] !== "string" || !HEX8.test(e.u[0]) || !isInt(e.u[1], 1e9)) return null;
       o.u = [e.u[0], e.u[1]];
@@ -435,13 +436,14 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
   // ログから、いまの数値・表示するログ・「元に戻す」の対象を計算する
   function calc() {
-    var es = S.ents.slice().sort(cmpEnt), undone = {}, R = null, adds = [], pl, vis = [], last = null, mark = {};
+    var es = S.ents.slice().sort(cmpEnt), undone = {}, R = null, adds = [], pl, vis = [], last = null, mark = {}, night = false;
     es.forEach(function (e) { if (e.u) undone[e.u[0] + ":" + e.u[1]] = true; });
     es.forEach(function (e) { if (e.r === 1 && !undone[entKey(e)]) R = e; });
     pl = R ? clone(R.to) : clone(INIT);
     es.forEach(function (e) {
       if (e.u || e.r === 1 || undone[entKey(e)]) return;
       if (R && e.s <= (R.cut[e.d] || 0)) return;
+      if (e.n !== undefined) { night = e.n === 1; return; } // 夜: 最後の切り替えが有効。リセットで昼に戻る
       adds.push(e); mark[entKey(e)] = true;
     });
     adds.forEach(function (e) {
@@ -449,9 +451,9 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       pl[e.p][e.k] = t; vis.push({ ts: e.ts, p: e.p, k: e.k, from: f, to: t });
     });
     es.forEach(function (e) { if (e === R || mark[entKey(e)]) last = e; });
-    return { players: pl, vis: vis, last: last, R: R };
+    return { players: pl, vis: vis, last: last, R: R, night: night };
   }
-  function recalc() { C = calc(); S.players = C.players; }
+  function recalc() { C = calc(); S.players = C.players; S.night = C.night; }
   function reindex() {
     S.keys = {}; S.have = {}; S.lc = 0;
     S.ents.forEach(function (e) { S.keys[entKey(e)] = 1; if (e.s > (S.have[e.d] || 0)) S.have[e.d] = e.s; if (e.c > S.lc) S.lc = e.c; });
@@ -506,6 +508,11 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       sync: cleanSync(p.sync)
     };
     if (!hasEnts) migrate(out, p, b);
+    if (p.night === true && !out.ents.some(function (e) { return e.n !== undefined; })) { // 保存されていた夜の状態を、ログに入れる
+      var mx = 0, mc = 0;
+      out.ents.forEach(function (e) { if (e.d === out.dev && e.s > mx) mx = e.s; if (e.c > mc) mc = e.c; });
+      out.ents.push({ d: out.dev, s: mx + 1, c: mc + 1, ts: Date.now(), n: 1 });
+    }
     return out;
   }
 
@@ -589,7 +596,6 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   function doReset() {
     var cut = {};
     Object.keys(S.have).forEach(function (k) { cut[k] = S.have[k]; });
-    S.night = false;
     append({ r: 1, to: [clone(S.start), clone(S.start)], cut: cut });
   }
 
@@ -659,7 +665,6 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
         if (e && addEnt(e)) { fresh++; if (e.r === 1) gotReset = true; }
       });
       if (fresh) {
-        if (gotReset) S.night = false;
         if (S.rs && gotReset) { clearTimeout(S.rs.timer); S.rs = null; }
         recalc(); save(); render(); tryFinish();
       }
@@ -944,7 +949,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var a = e.target.closest("[data-act]");
     if (a) {
       if (a.dataset.act === "undo") undo();
-      else if (a.dataset.act === "night") { S.night = !S.night; save(); render(); }
+      else if (a.dataset.act === "night") append({ n: C.night ? 0 : 1 });
       else resetClick();
       return;
     }

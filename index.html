@@ -1,0 +1,911 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>パルカカウンター</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap">
+<style>
+/* Layout: 2人=4列×2行(1行が1人: ライフ/食材/資材/ログ)。1人=2×2。各マスは数字の下に+1と−1を縦に並べる。 */
+:root {
+  --bg: #0e1621; --panel: #16212f; --panel-2: #1e2d40; --fg: #e6edf5; --muted: #8b9fb5;
+  --line: #2a3b50; --life: #ff7168; --food: #4ade80; --mat: #ffa033; --accent: #4da3ff; --on-accent: #07121f; --night: #7c4dff; --night-ink: #9a74ff;
+  --font: "M PLUS Rounded 1c", "Hiragino Maru Gothic ProN", "Yu Gothic", system-ui, sans-serif;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #eef3f1; --panel: #ffffff; --panel-2: #e4ece8; --fg: #16302b; --muted: #5d7770;
+  --line: #cddbd5; --life: #d6453d; --food: #22b14c; --mat: #f27d0c; --accent: #1f8a70; --on-accent: #ffffff; --night-ink: #5b2fc9;
+  color-scheme: light;
+}
+/* 夜: 背景(--bg)だけを紫系にする。マスの色(--panel など)は変えない */
+:root.night { --bg: #1d1236; --panel: #2b1c52; --line: #54399a; --muted: #b9a6e8; }
+:root[data-theme="light"].night { --bg: #d8c9f0; --panel: #eee6fb; --line: #bca6e6; --muted: #6b5499; }
+* { box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px;
+  -webkit-tap-highlight-color: transparent; overscroll-behavior: none;
+}
+button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* 全体を包む枠。縦固定の端末で横画面にするときはここを 90度回転する */
+#app { position: fixed; inset: 0; }
+html.rot1 #app, html.rot2 #app { inset: auto; top: 0; left: 0; width: 100dvh; height: 100dvw; transform-origin: 0 0; }
+html.rot1 #app { transform: translateX(100dvw) rotate(90deg); }
+html.rot2 #app { transform: translateY(100dvh) rotate(-90deg); }
+/* メニュー層: メニューを開いている間は向きを固定し、開き直したときにいまの回転に合わせる */
+#menuLayer { position: fixed; inset: 0; pointer-events: none; z-index: 30; }
+#menuLayer .scrim, #menuLayer .sheet, #menuLayer .toast { pointer-events: auto; }
+#menuLayer.ml1, #menuLayer.ml2 { inset: auto; top: 0; left: 0; width: 100dvh; height: 100dvw; transform-origin: 0 0; }
+#menuLayer.ml1 { transform: translateX(100dvw) rotate(90deg); }
+#menuLayer.ml2 { transform: translateY(100dvh) rotate(-90deg); }
+html.rot1 .stage, html.rot2 .stage { padding: 6px; }
+
+/* ステージ: 1人=1行 */
+.stage {
+  position: fixed; inset: 0; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; gap: 6px;
+  padding: calc(6px + env(safe-area-inset-top, 0px)) calc(6px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) calc(6px + env(safe-area-inset-left, 0px));
+  background: var(--bg);
+}
+.player { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 6px; min-height: 0; min-width: 0; }
+
+.player.flip { transform: rotate(180deg); }
+
+/* マス */
+.counter {
+  --c: var(--life);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: 3fr 2fr; gap: 6px;
+  min-height: 0; min-width: 0; background: var(--panel); border-radius: 14px; padding: 6px;
+}
+.counter.food { --c: var(--food); }
+.counter.mat { --c: var(--mat); }
+.mid { grid-row: 1; grid-column: 1 / -1; position: relative; pointer-events: none; /* 数値の行はタップを受けない(両隣のボタンに重なるため) */ display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; }
+.label {
+  position: absolute; top: 0; left: 0; display: flex; align-items: center; gap: 5px;
+  font-weight: 800; font-size: clamp(11px, 2svh, 15px); color: var(--muted); white-space: nowrap;
+}
+.dot { width: 9px; height: 9px; border-radius: 3px; background: var(--c); flex: none; }
+.ico { display: inline-flex; color: var(--c); flex: none; }
+.ico svg { width: 1.5em; height: 1.5em; display: block; }
+.value {
+  font-variant-numeric: tabular-nums; font-weight: 800; color: var(--c); line-height: 1; letter-spacing: -.02em;
+  font-size: min(7svh, 14vw); padding-top: 12px;
+}
+.step {
+  background: var(--panel-2); border: 2px solid var(--c); border-radius: 12px; min-height: 0; min-width: 0;
+  font-weight: 800; font-variant-numeric: tabular-nums; font-size: min(3.4svh, 4.6vw);
+}
+/* 既定は左−・右+。相手側は180度回転するだけで、相手から見ても左−・右+になる。「カウンター位置切り替え」で+左・−右。 */
+/* ボタン群: 位置と段数は、マスの形から JS(layoutSteps)が決めて、各ボタンに直接指定する */
+.steps { grid-row: 2; grid-column: 1 / -1; position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; min-height: 0; min-width: 0; }
+.step:active { background: var(--c); color: var(--panel); }
+
+/* ログのマス */
+.logpanel { order: -1; background: var(--panel); border-radius: 14px; padding: 6px 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.logpanel h2 { font-size: 12px; font-weight: 800; margin: 0 0 4px; display: flex; justify-content: space-between; align-items: center; flex: none; color: var(--muted); min-height: 30px; }
+.menu-btn {
+  width: 34px; height: 30px; border-radius: 8px; flex: none;
+  background: transparent; border: 1.5px solid var(--line); font-size: 18px; line-height: 1; font-weight: 800; color: var(--muted);
+}
+.logpanel ol.log { flex: 1; max-height: none; min-height: 0; font-size: 13px; }
+.logpanel ol.log li { flex-wrap: wrap; gap: 0 6px; padding: 4px 0; }
+.logpanel .t { display: inline; }
+
+/* 一人モード: 2×2 */
+.stage.solo { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+.stage.solo .player { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; grid-row: 1; }
+.stage.solo .value { font-size: min(11svh, 22vw); }
+.stage.solo .step { font-size: min(5.5svh, 11vw); }
+.stage.solo .label { font-size: clamp(12px, 2.4svh, 16px); }
+.stage.solo .logpanel { order: -1; }
+.stage.solo .logpanel ol.log { font-size: 15px; }
+.stage.solo .logpanel .t { display: inline; }
+
+/* 一人モード: ログのマスに「戻す」と「リセット」(縦=下側、横=右側) */
+.logtools { display: flex; gap: 6px; flex: none; margin-top: 6px; }
+.lt {
+  flex: 1; min-height: 46px; padding: 0 8px; border-radius: 10px; background: var(--panel-2);
+  border: 1.5px solid var(--line); font-weight: 800; font-size: 14px;
+}
+.lt.warn { border-color: var(--life); color: var(--life); }
+.lt:disabled { opacity: .4; cursor: default; }
+.lt:active:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+
+/* 横画面: 右端にサイド列(上から メニュー・元に戻す・リセット)。一人・二人共通 */
+.side { display: none; grid-row: 1 / -1; grid-template-rows: minmax(0, 64px) minmax(0, 104px) minmax(0, 64px) minmax(0, 64px); align-content: start; gap: 6px; min-height: 0; }
+.sbtn {
+  min-height: 0; padding: 0 4px; border-radius: 12px; background: var(--panel); border: 1.5px solid var(--line);
+  font-weight: 800; font-size: 13px; line-height: 1.2; color: var(--fg);
+}
+.sbtn.sm { font-size: 22px; color: var(--muted); }
+.sbtn.warn { border-color: var(--life); color: var(--life); }
+.sbtn:disabled { opacity: .4; cursor: default; }
+.sbtn.night { font-size: 22px; color: var(--night-ink); }
+.sbtn.night[aria-pressed="true"] { background: var(--night); border-color: var(--night); color: #fff; }
+.sbtn:active:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+/* 横レイアウトは html.land (実際に横向き、またはメニューで横画面にしたとき) */
+html.land .stage:not(.solo) { grid-template-columns: 1fr 1fr 72px; }
+html.land .stage.solo { grid-template-columns: 1fr 72px; }
+html.land .side { display: grid; grid-column: -2 / -1; }
+html.land .stage.center:not(.solo) { grid-template-columns: 1fr 72px 1fr; }
+html.land .stage.center:not(.solo) .side { grid-column: 2; }
+/* 縦レイアウトの二人: 上のプレイヤーと下のプレイヤーの間に置く */
+html:not(.land) .stage.center:not(.solo) { grid-template-rows: 1fr auto 1fr; }
+html:not(.land) .stage.center:not(.solo) .side { grid-row: 2; }
+html.land .player.lswap .logpanel { grid-row: 1; grid-column: 2; }
+html.land .player.lswap .counter.life { grid-row: 1; grid-column: 1; }
+html.land .logtools, html.land .logpanel .menu-btn { display: none; }
+
+/* 縦向きの二人モード: スマホを対面で囲む想定で、上下に並べる(上=相手・180度回転、下=自分) */
+html:not(.land) .stage:not(.solo) { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr auto; }
+html:not(.land) .side { display: grid; grid-column: 1 / -1; grid-row: auto; grid-template-columns: 56px 1.5fr 1fr 1fr; grid-template-rows: 52px; align-content: stretch; }
+html:not(.land) .logtools, html:not(.land) .logpanel .menu-btn { display: none; }
+html:not(.land) .stage:not(.solo) .logpanel .t { display: inline; }
+
+/* メニューシート */
+.scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 30; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 31; max-height: 88%; overflow-y: auto;
+  background: var(--bg); border-top: 2px solid var(--line); border-radius: 20px 20px 0 0;
+  padding: 14px max(16px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  display: flex; flex-direction: column; gap: 14px;
+}
+.sheet > * { flex: none; }
+.sheet-head { display: flex; justify-content: space-between; align-items: center; }
+.sheet h1 { font-size: 18px; font-weight: 800; margin: 0; }
+.sheet h2 { font-size: 14px; font-weight: 800; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: baseline; }
+.sheet h2 span { color: var(--muted); font-weight: 500; font-size: 13px; }
+.close { background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 16px; font-weight: 800; min-height: 44px; }
+.mode { display: grid; grid-template-columns: 1fr 1fr; border: 1.5px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+.mode button { border: 0; background: none; padding: 12px 8px; font-weight: 800; min-height: 48px; }
+.mode button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.mode button:disabled { opacity: .4; cursor: default; background: none; color: var(--fg); }
+.card .mode + .mode, .card .tools + .mode { margin-top: 8px; }
+.exrow { display: grid; grid-template-columns: 4.6em repeat(4, minmax(0, 1fr)); gap: 6px; align-items: center; margin-top: 8px; }
+.exrow.life { --c: var(--life); } .exrow.food { --c: var(--food); } .exrow.mat { --c: var(--mat); }
+.exnm { font-weight: 800; font-size: 13px; color: var(--c); }
+.chip { background: var(--bg); border: 1.5px solid var(--line); border-radius: 10px; min-height: 44px; font-weight: 800; font-size: 14px; }
+.chip[aria-pressed="true"] { background: var(--c); color: var(--panel); border-color: var(--c); }
+.tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.tools.two { grid-template-columns: repeat(2, 1fr); }
+.tool small { display: block; font-size: 11px; font-weight: 700; opacity: .8; }
+.tool {
+  background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 6px 4px; font-weight: 800; min-height: 52px; font-size: 13px; line-height: 1.25;
+}
+.tool[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.tool:disabled { opacity: .4; cursor: default; background: var(--panel); border-color: var(--line); color: var(--fg); }
+.tool.warn { border-color: var(--life); color: var(--life); }
+.tool.warn.armed { background: var(--life); color: var(--panel); }
+.card { background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 12px; }
+.setting { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.setting input[type=number] {
+  font: inherit; font-size: 16px; width: 5.5em; padding: 8px 10px; border-radius: 10px; border: 1.5px solid var(--line);
+  background: var(--bg); color: var(--fg); font-variant-numeric: tabular-nums;
+}
+ol.log {
+  list-style: none; margin: 0; padding: 0 6px 0 0; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column;
+  scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--muted) transparent;
+}
+ol.log::-webkit-scrollbar { width: 6px; }
+ol.log::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 3px; }
+ol.log::-webkit-scrollbar-track { background: transparent; }
+ol.log li { display: flex; gap: 10px; padding: 7px 2px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; align-items: baseline; }
+ol.log li:last-child { border-bottom: 0; }
+.t { color: var(--muted); font-size: 12px; flex: none; }
+.t .s { display: none; }
+ol.log.sec .t .s, ol.log li.cmp .t .s { display: inline; }
+ol.log li.cmp .ft { display: none; }
+ol.log li.cmp .t { flex-basis: 100%; } /* 1段目は時刻だけ。2段目に、名前と増減を同じ段で並べる */
+.chg { margin-left: auto; font-weight: 800; flex: none; }
+.empty { color: var(--muted); padding: 6px 2px; }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40;
+  background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 700; max-width: 90%;
+}
+/* 極端に小さい画面: 文字をマスの大きさ(コンテナ単位)に合わせて枠からはみ出さない */
+.counter, .logpanel { container-type: size; overflow: hidden; }
+.stage .counter .value { font-size: var(--vf, min(32cqh, 38cqw)); padding-top: 0; }
+.stage .counter .step { font-size: var(--sf, min(14cqh, 17cqw)); padding: 0; overflow: hidden; }
+.stage .counter .label { font-size: clamp(9px, 7cqh, 15px); }
+.stage .logpanel ol.log { font-size: clamp(9px, 8cqh, 14px) !important; }
+.stage .logpanel ol.log li { padding: 2px 0; }
+@container (max-height: 120px) {
+  .logpanel h2, .nm { display: none; }
+  /* 名前が省略されたときは、アイコンを数字の左に置く */
+  .label { position: static; margin-right: 4px; }
+  .ico svg { width: clamp(12px, 26cqh, 26px); height: clamp(12px, 26cqh, 26px); }
+}
+ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+/* 縦から横へ切り替えたときの「傾けてください」表示(少しだけ出て消える) */
+.tilt { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 36; pointer-events: none !important; opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility 0s linear .25s; }
+.tilt.show { opacity: 1; visibility: visible; transition: opacity .2s ease; }
+.tilt-card { background: rgba(14, 26, 23, .86); color: #fff; border-radius: 20px; padding: 20px 28px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; box-shadow: 0 8px 30px rgba(0, 0, 0, .35); }
+.tilt-phone { height: 160px; display: flex; align-items: center; justify-content: center; }
+.tilt-phone svg { display: block; }
+.tilt-text { font-weight: 800; font-size: 17px; }
+.tilt-sub { font-weight: 700; font-size: 15px; opacity: .85; min-height: 1.2em; }
+.tilt-phone { --from: 0deg; --to: 0deg; transform: rotate(var(--to)); }
+.tilt.show .tilt-phone { animation: tiltTo 1.3s ease-in-out .2s both; }
+@keyframes tiltTo { from { transform: rotate(var(--from)); } to { transform: rotate(var(--to)); } }
+@media (prefers-reduced-motion: reduce) {
+  .tilt.show .tilt-phone { animation: none; transform: rotate(var(--to)); }
+}
+
+/* メニュー内ボタン: 押している間は少し縮んで暗くなり、離すと元に戻る */
+.tool.pressed, .close.pressed, .mode button.pressed { filter: brightness(.9); }
+@media (prefers-reduced-motion: no-preference) {
+  .step { transition: background .1s; }
+  .tool, .close, .mode button { transition: transform .14s ease, filter .14s ease, background-color .14s ease; }
+  .tool.pressed, .close.pressed, .mode button.pressed { transform: scale(.94); transition-duration: .06s; }
+}
+</style>
+
+<div id="app">
+<div class="stage" id="stage" aria-label="カウンター"></div>
+
+</div>
+<div id="menuLayer">
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-label="メニュー" hidden>
+  <div class="sheet-head">
+    <h1>メニュー</h1>
+    <button class="close" id="close" type="button">閉じる</button>
+  </div>
+  <div class="mode" role="group" aria-label="人数">
+    <button id="mode-solo" type="button">1P</button>
+    <button id="mode-two" type="button">1P+2P</button>
+  </div>
+  <div class="tools two">
+    <button class="tool" id="orient" type="button" aria-pressed="false">対面・縦置き<small>対面</small></button>
+    <button class="tool" id="center" type="button" aria-pressed="false">サブメニュー中央置き</button>
+  </div>
+  <div class="tools">
+    <button class="tool" id="swap" type="button" aria-pressed="false">カウンター位置切り替え<small>− / +</small></button>
+    <button class="tool" id="wake" type="button" aria-pressed="false">画面を消さない</button>
+    <button class="tool" id="rot" type="button" aria-pressed="false">横画面・縦画面</button>
+  </div>
+  <div class="mode" role="group" aria-label="画面の色">
+    <button id="theme-dark" type="button">ダーク</button>
+    <button id="theme-light" type="button">ホワイト</button>
+  </div>
+  <div class="card" id="steps-card">
+    <h2>±2〜±5ボタン</h2>
+    <div class="tools two">
+      <button class="tool" id="sg" type="button" aria-pressed="true">±同時<small>オン</small></button>
+      <button class="tool" id="ex" type="button" aria-pressed="true">1P/2P共通<small>オン</small></button>
+    </div>
+    <div class="mode" role="group" aria-label="個別設定の対象">
+      <button id="ex-me" type="button">1P</button>
+      <button id="ex-opp" type="button">2P</button>
+    </div>
+    <div class="exrow life" data-g="both"><span class="exnm">ライフ</span><button class="chip" type="button" data-k="life" data-m="2" data-s="plus" aria-pressed="false">±2</button><button class="chip" type="button" data-k="life" data-m="3" data-s="plus" aria-pressed="false">±3</button><button class="chip" type="button" data-k="life" data-m="4" data-s="plus" aria-pressed="false">±4</button><button class="chip" type="button" data-k="life" data-m="5" data-s="plus" aria-pressed="false">±5</button></div>
+    <div class="exrow life" data-g="each" hidden><span class="exnm">ライフ</span><button class="chip" type="button" data-k="life" data-m="2" data-s="plus" aria-pressed="false">+2</button><button class="chip" type="button" data-k="life" data-m="3" data-s="plus" aria-pressed="false">+3</button><button class="chip" type="button" data-k="life" data-m="4" data-s="plus" aria-pressed="false">+4</button><button class="chip" type="button" data-k="life" data-m="5" data-s="plus" aria-pressed="false">+5</button></div>
+    <div class="exrow life" data-g="each" hidden><span class="exnm"></span><button class="chip" type="button" data-k="life" data-m="2" data-s="minus" aria-pressed="false">−2</button><button class="chip" type="button" data-k="life" data-m="3" data-s="minus" aria-pressed="false">−3</button><button class="chip" type="button" data-k="life" data-m="4" data-s="minus" aria-pressed="false">−4</button><button class="chip" type="button" data-k="life" data-m="5" data-s="minus" aria-pressed="false">−5</button></div>
+    <div class="exrow food" data-g="both"><span class="exnm">食材</span><button class="chip" type="button" data-k="food" data-m="2" data-s="plus" aria-pressed="false">±2</button><button class="chip" type="button" data-k="food" data-m="3" data-s="plus" aria-pressed="false">±3</button><button class="chip" type="button" data-k="food" data-m="4" data-s="plus" aria-pressed="false">±4</button><button class="chip" type="button" data-k="food" data-m="5" data-s="plus" aria-pressed="false">±5</button></div>
+    <div class="exrow food" data-g="each" hidden><span class="exnm">食材</span><button class="chip" type="button" data-k="food" data-m="2" data-s="plus" aria-pressed="false">+2</button><button class="chip" type="button" data-k="food" data-m="3" data-s="plus" aria-pressed="false">+3</button><button class="chip" type="button" data-k="food" data-m="4" data-s="plus" aria-pressed="false">+4</button><button class="chip" type="button" data-k="food" data-m="5" data-s="plus" aria-pressed="false">+5</button></div>
+    <div class="exrow food" data-g="each" hidden><span class="exnm"></span><button class="chip" type="button" data-k="food" data-m="2" data-s="minus" aria-pressed="false">−2</button><button class="chip" type="button" data-k="food" data-m="3" data-s="minus" aria-pressed="false">−3</button><button class="chip" type="button" data-k="food" data-m="4" data-s="minus" aria-pressed="false">−4</button><button class="chip" type="button" data-k="food" data-m="5" data-s="minus" aria-pressed="false">−5</button></div>
+    <div class="exrow mat" data-g="both"><span class="exnm">素材</span><button class="chip" type="button" data-k="mat" data-m="2" data-s="plus" aria-pressed="false">±2</button><button class="chip" type="button" data-k="mat" data-m="3" data-s="plus" aria-pressed="false">±3</button><button class="chip" type="button" data-k="mat" data-m="4" data-s="plus" aria-pressed="false">±4</button><button class="chip" type="button" data-k="mat" data-m="5" data-s="plus" aria-pressed="false">±5</button></div>
+    <div class="exrow mat" data-g="each" hidden><span class="exnm">素材</span><button class="chip" type="button" data-k="mat" data-m="2" data-s="plus" aria-pressed="false">+2</button><button class="chip" type="button" data-k="mat" data-m="3" data-s="plus" aria-pressed="false">+3</button><button class="chip" type="button" data-k="mat" data-m="4" data-s="plus" aria-pressed="false">+4</button><button class="chip" type="button" data-k="mat" data-m="5" data-s="plus" aria-pressed="false">+5</button></div>
+    <div class="exrow mat" data-g="each" hidden><span class="exnm"></span><button class="chip" type="button" data-k="mat" data-m="2" data-s="minus" aria-pressed="false">−2</button><button class="chip" type="button" data-k="mat" data-m="3" data-s="minus" aria-pressed="false">−3</button><button class="chip" type="button" data-k="mat" data-m="4" data-s="minus" aria-pressed="false">−4</button><button class="chip" type="button" data-k="mat" data-m="5" data-s="minus" aria-pressed="false">−5</button></div>
+  </div>
+  <div class="card">
+    <h2>スタート時の数値</h2>
+    <div class="setting">
+      <label>ライフ <input type="number" id="s-life" inputmode="numeric" min="0"></label>
+      <label>食材 <input type="number" id="s-food" inputmode="numeric" min="0"></label>
+      <label>素材 <input type="number" id="s-mat" inputmode="numeric" min="0"></label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>履歴ログ <span id="log-count"></span></h2>
+    <ol class="log" id="log"></ol>
+  </div>
+</div>
+<div class="tilt" id="tilt" aria-hidden="true">
+  <div class="tilt-card">
+    <div class="tilt-phone" id="tiltPhone">
+      <svg id="icoTall" viewBox="0 0 48 80" width="54" height="90"><rect x="3" y="3" width="42" height="74" rx="8" fill="none" stroke="currentColor" stroke-width="4"/><rect x="9" y="12" width="30" height="50" rx="3" fill="currentColor" opacity=".25"/><circle cx="24" cy="69" r="2.4" fill="currentColor"/></svg>
+      <svg id="icoWide" viewBox="0 0 92 68" width="120" height="89" style="display:none"><rect x="3" y="3" width="86" height="62" rx="8" fill="none" stroke="currentColor" stroke-width="4"/><rect x="11" y="11" width="70" height="46" rx="2" fill="currentColor" opacity=".25"/><rect x="36" y="50" width="20" height="2.6" rx="1.3" fill="currentColor"/></svg>
+    </div>
+    <div class="tilt-text" id="tiltText"></div>
+    <div class="tilt-sub" id="tiltSub"></div>
+  </div>
+</div>
+<div class="toast" id="toast" hidden></div>
+</div>
+
+<script>
+(function () {
+  var KEY = "palca-v3";
+  var KINDS = { life: "ライフ", food: "食材", mat: "素材" };
+  var NAMES = ["1P", "2P"];
+  // アイコン(自作のSVG): ライフ=ハート、食材=洋ナシ、素材=丸太
+  var ICONS = {
+    life: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
+    food: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5.8c-2.1 0-3.7 1.6-3.7 3.6 0 1.4.5 2.4 1.1 3.2-1.9 1.2-3 2.8-3 5 0 2.7 2.4 4.4 5.6 4.4s5.6-1.7 5.6-4.4c0-2.2-1.1-3.8-3-5 .6-.8 1.1-1.8 1.1-3.2 0-2-1.6-3.6-3.7-3.6z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 5.8c0-1.3.3-2.3 1-3.2"/><path fill="currentColor" d="M13 4.6c1.2-1.7 3.1-2 4.5-1.4-.5 1.6-2.1 2.7-4.5 1.4z"/></svg>',
+    mat: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="16" height="12" rx="2.5" fill="currentColor"/><ellipse cx="18" cy="12" rx="4" ry="6" fill="var(--panel)" stroke="currentColor" stroke-width="1.8"/><ellipse cx="18" cy="12" rx="1.5" ry="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 10h6M5 14h8" stroke="var(--panel)" stroke-width="1.4" stroke-linecap="round" opacity=".8"/></svg>'
+  };
+  var LOG_MAX = 20;
+  var OPS_MAX = 100;
+  var ROT_LABELS = ["横画面・縦画面<small>切</small>", "横画面・縦画面<small>右</small>", "横画面・縦画面<small>左</small>"];
+
+  function defaults() {
+    return {
+      mode: "two",
+      theme: "dark",
+      night: false,
+      orient: "face",
+      center: false,
+      extra: [emptyExtra(), emptyExtra()],
+      extraEach: false, // false=1P/2P共通, true=1P/2P個別
+      extraSign: "both", // both=±同時, each=±個別(+用と−用を別々に)
+      rotP: 0,
+      rotL: 0,
+      swap: "off", // off / both(二人) / p1(1Pのみ=自分) / p2(2Pのみ=相手)
+      start: { life: 10, food: 0, mat: 0 },
+      base: [{ life: 10, food: 0, mat: 0 }, { life: 10, food: 0, mat: 0 }],
+      ops: []
+    };
+  }
+
+  // 保存データの検証: 読み込んだ値はすべて、数値・列挙値の範囲に作り直す(文字列や想定外の形は捨てる)
+  function num(v, d) { return typeof v === "number" && isFinite(v) && v >= 0 && v <= 999999 ? Math.floor(v) : d; }
+  function cleanRot(v) { return v === 1 || v === 2 ? v : 0; }
+  function cleanRes(o, d) { o = o || {}; return { life: num(o.life, d.life), food: num(o.food, d.food), mat: num(o.mat, d.mat) }; }
+  // 操作ログ: 通常の操作 {ts,p,k,from,to}、リセット {ts,r:1,to:{life,food,mat}}
+  function cleanOps(a) {
+    if (!Array.isArray(a)) return [];
+    var d = defaults().start;
+    return a.filter(function (e) {
+      if (!e || typeof e.ts !== "number" || !isFinite(e.ts)) return false;
+      if (e.r === 1) return !!e.to && typeof e.to === "object";
+      return (e.p === 0 || e.p === 1) && typeof e.k === "string" && Object.prototype.hasOwnProperty.call(KINDS, e.k) &&
+        typeof e.from === "number" && isFinite(e.from) && typeof e.to === "number" && isFinite(e.to);
+    }).slice(-OPS_MAX).map(function (e) {
+      if (e.r === 1) return { ts: e.ts, r: 1, to: cleanRes(e.to, d) };
+      return { ts: e.ts, p: e.p, k: e.k, from: num(e.from, 0), to: num(e.to, 0) };
+    });
+  }
+  function applyOp(pl, e) {
+    if (e.r === 1) { pl[0] = clone(e.to); pl[1] = clone(e.to); }
+    else pl[e.p][e.k] = e.to;
+  }
+  // 現在の数値 = 土台(base) + 操作ログを順に当てはめたもの
+  function derive(st) {
+    var pl = [clone(st.base[0]), clone(st.base[1])];
+    st.ops.forEach(function (e) { applyOp(pl, e); });
+    return pl;
+  }
+  function emptyExtra() { return { life: { plus: [], minus: [] }, food: { plus: [], minus: [] }, mat: { plus: [], minus: [] } }; }
+  function cleanAmts(a) { return Array.isArray(a) ? [2, 3, 4, 5].filter(function (v) { return a.indexOf(v) >= 0; }) : []; }
+  // 旧形式(配列)は、プラスとマイナスに同じ内容を入れて引き継ぐ
+  function cleanKind(v) {
+    if (Array.isArray(v)) { var a = cleanAmts(v); return { plus: a, minus: a.slice() }; }
+    v = v || {};
+    return { plus: cleanAmts(v.plus), minus: cleanAmts(v.minus) };
+  }
+  function cleanExtra(o) { o = o || {}; return { life: cleanKind(o.life), food: cleanKind(o.food), mat: cleanKind(o.mat) }; }
+  function cleanState(p) {
+    var d = defaults();
+    if (!p || typeof p !== "object") return d;
+    var b = Array.isArray(p.base) ? p.base : p.players; // 旧形式(players/log/undo)は、数値だけ引き継ぐ
+    if (!Array.isArray(b) || b.length !== 2) return d;
+    return {
+      mode: p.mode === "solo" ? "solo" : "two",
+      theme: p.theme === "light" ? "light" : "dark",
+      night: p.night === true,
+      orient: p.orient === "same" ? "same" : "face",
+      center: p.center === true,
+      extra: Array.isArray(p.extra) && p.extra.length === 2 ? [cleanExtra(p.extra[0]), cleanExtra(p.extra[1])] : d.extra,
+      extraEach: p.extraEach === true,
+      extraSign: p.extraSign === "each" ? "each" : "both",
+      rotP: cleanRot(p.rotP !== undefined ? p.rotP : p.rot),
+      rotL: cleanRot(p.rotL),
+      swap: p.swap === true || p.swap === "both" ? "both" : (p.swap === "p1" || p.swap === "p2" ? p.swap : "off"),
+      start: cleanRes(p.start, d.start),
+      base: [cleanRes(b[0], d.base[0]), cleanRes(b[1], d.base[1])],
+      ops: Array.isArray(p.ops) ? cleanOps(p.ops) : []
+    };
+  }
+
+  var S = defaults();
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (raw) S = cleanState(JSON.parse(raw));
+  } catch (e) {}
+  S.players = derive(S);
+  S.extraEdit = 0; // 個別設定で編集中の対象(0=自分, 1=相手)。保存しない
+  // 1P/2P共通・±同時のとき、個別の内容は残しておく。破棄(=共通の設定と同じにする)するのは、
+  // その状態でメニューを閉じたときと、その状態で ±2〜±5 の設定を変えたとき。切り替えを繰り返しただけでは破棄しない
+  function discardIndividual() {
+    if (!S.extraEach) S.extra[1] = clone(S.extra[0]);
+    // ±同時のときは、−用の内容も+用と同じにする(個別の内容の破棄は、プレイヤーの場合と同じタイミング)
+    if (S.extraSign === "both") S.extra.forEach(function (e) { ["life", "food", "mat"].forEach(function (k) { e[k].minus = e[k].plus.slice(); }); });
+  }
+  discardIndividual();
+  function save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, base: S.base, ops: S.ops }));
+    } catch (e) {}
+  }
+  function $(id) { return document.getElementById(id); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function sign(n) { return (n > 0 ? "+" : "−") + Math.abs(n); }
+  function hhmm(ts) {
+    var d = new Date(ts);
+    return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  }
+  function ss(ts) { return ":" + ("0" + new Date(ts).getSeconds()).slice(-2); }
+  // ログの表示の調整(欄ごとに、見えている行を測って決める)。
+  //  ・3段に折り返す行: 時刻に秒を付けて、「(from→to)」を省き、2段(時刻 / 名前と増減)にする
+  //  ・それ以外の行: 秒を付けても行数が増えない(折り返しが増えない・はみ出さない)ときだけ、秒を出す。
+  //    元から2段の行は、秒を付けても段が増えなければ、秒を出す
+  function fitLogSeconds() {
+    Array.prototype.forEach.call(document.querySelectorAll("ol.log"), function (ol) {
+      if (!ol.offsetParent) return; // 隠れているとき(メニューを閉じている間)は、開いたときに調べる
+      var lis = Array.prototype.slice.call(ol.querySelectorAll("li:not(.empty)"));
+      ol.classList.remove("sec");
+      lis.forEach(function (li) { li.classList.remove("cmp"); });
+      var base = lis.map(function (li) { return li.offsetHeight; });
+      var three = lis.map(function (li, i) {
+        var lh = 0, cs = getComputedStyle(li), pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+        Array.prototype.forEach.call(li.children, function (k) { lh = Math.max(lh, k.offsetHeight); });
+        return base[i] - pad > lh * 2.4; // 3段以上
+      });
+      lis.forEach(function (li, i) { if (three[i]) li.classList.add("cmp"); });
+      ol.classList.add("sec");
+      var ok = ol.scrollWidth <= ol.clientWidth + 1;
+      lis.forEach(function (li, i) { if (!three[i] && li.offsetHeight > base[i] + 1) ok = false; });
+      if (!ok) ol.classList.remove("sec");
+    });
+  }
+  function escapeHtml(s) { return s.replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  function pushOp(e) {
+    S.ops.push(e);
+    applyOp(S.players, e);
+    // 100件を超えたら、いちばん古い操作を土台の数値に反映してから消す
+    while (S.ops.length > OPS_MAX) applyOp(S.base, S.ops.shift());
+  }
+
+  function change(pi, kind, d) {
+    var before = S.players[pi][kind];
+    var after = Math.max(0, before + d);
+    if (after === before) return;
+    pushOp({ ts: Date.now(), p: pi, k: kind, from: before, to: after });
+    save(); render();
+  }
+
+  function undo() {
+    if (!S.ops.length) return;
+    S.ops.pop();
+    S.players = derive(S);
+    save(); render();
+  }
+
+  function resetClick() {
+    S.night = false;
+    pushOp({ ts: Date.now(), r: 1, to: clone(S.start) });
+    save(); render();
+  }
+
+  // 表示するログ: 最後のリセットより後の操作のうち、新しい順に最大20件
+  function visLog() {
+    var out = [];
+    for (var i = S.ops.length - 1; i >= 0 && out.length < LOG_MAX; i--) {
+      if (S.ops[i].r === 1) break;
+      out.push(S.ops[i]);
+    }
+    return out;
+  }
+
+  function stepBtn(pi, kind, d) {
+    return '<button type="button" class="step ' + (d > 0 ? "plus" : "minus") + '" data-p="' + pi + '" data-k="' + kind + '" data-d="' + d +
+      '" aria-label="' + KINDS[kind] + ' ' + sign(d) + '">' + sign(d) + "</button>";
+  }
+
+  // ±1 に加えて、設定で選んだ ±2〜±5 を、−n と +n のペアで並べる(位置はあとで layoutSteps が決める)
+  function stepsHtml(pi, kind) {
+    var e = S.extra[S.extraEach && S.mode !== "solo" ? pi : 0][kind];
+    var pl = [1].concat(e.plus), mi = [1].concat(S.extraSign === "each" ? e.minus : e.plus);
+    var sym = pl.length === mi.length && pl.every(function (v, i) { return v === mi[i]; });
+    if (sym) return pl.map(function (a) { return stepBtn(pi, kind, -a) + stepBtn(pi, kind, a); }).join("");
+    return mi.map(function (a) { return stepBtn(pi, kind, -a); }).join("") + pl.map(function (a) { return stepBtn(pi, kind, a); }).join("");
+  }
+
+  var GAP = 6;
+  // 「−/+ の位置を入れ替える」対象か(pi: 0=1P(自分), 1=2P(相手))
+  function swapOf(pi) { var st = swapState(); return st === "both" || (st === "p1" && pi === 0) || (st === "p2" && pi === 1); }
+  // 一人のときは、自分(1P)だけが対象。保存値が both なら p1、p2 なら off として扱う
+  function swapState() {
+    if (S.mode !== "solo") return S.swap;
+    return S.swap === "both" || S.swap === "p1" ? "p1" : "off";
+  }
+  function nextSwap() {
+    var order = S.mode === "solo" ? ["off", "p1"] : ["off", "both", "p1", "p2"];
+    return order[(order.indexOf(swapState()) + 1) % order.length];
+  }
+  // カウンター(−1、+1、−2、+2…の1つ1つ)の並びを、マスの大きさ(Wc×Hc)と個数から決める。
+  //  ・合計のカウンター数が4つ以内: マスの形によらず、数値の下に1段で横並び(4つで縦に細長くなるときだけ2×2)
+  //  ・5つ以上で、マスが横に広い: ±1を数値の両隣、±2〜±5を数値の下
+  //  ・5つ以上で、マスが縦に広い: 数値の下に、上段が±1、下段が±2〜±5
+  //  ・8つ以上: マスの形によらず、±1を数値の両隣に置き、数値の下の上段に、各側のいちばん低い追加(−2、+2 など)、下段に残りを横並びにする
+  // ボタンの段は、最大2段(追加分は必ず1段に収める。個数が多いと、ボタンは細くなる)
+  function planCounter(kl, kr, Wc, Hc, forceTall) {
+    var total = kl + kr + 2;
+    if (total <= 4) {
+      var bw1 = (Wc - (total - 1) * GAP) / total, hb1 = (Hc - GAP) * 0.58;
+      // 4つのとき、1段だと縦に細長くなる(高さが幅の1.2倍より大きい)なら、2×2にする(上段 ±1、下段 追加の2つ)
+      if (total === 4) {
+        var bh1 = Math.max(Math.min(hb1, Math.max(bw1, 40)), Math.min((Hc - GAP) * 0.4, hb1)), n4 = kl + kr;
+        if (bh1 > bw1 * 1.2) return { kind: "two", rx: 1, N: n4, rows: 2, cols: 2 * n4, bw: (Wc - (n4 - 1) * GAP) / n4, bhMax: (hb1 - GAP) / 2 };
+      }
+      return { kind: "row", rows: 1, cols: total, bw: bw1, bhMax: hb1 };
+    }
+    if (total >= 8) { // 追加分が両側に2つ以上ずつある
+      var N8 = (kl - 1) + (kr - 1), bw8 = (Wc - (N8 - 1) * GAP) / N8;
+      return { kind: "flank", split: true, rx: 2, N: N8, rows: 2, cols: 2 * N8, bw: bw8, bhMax: ((Hc - GAP) * 0.5 - GAP) / 2 };
+    }
+    var wide = Wc > Hc && !forceTall, maxRx = 1, cands = [], top = 0;
+    for (var rx = 1; rx <= maxRx; rx++) {
+      var cl = Math.ceil(kl / rx), cr = Math.ceil(kr / rx), N = cl + cr;
+      if (rx > 1 && Math.ceil(kl / (rx - 1)) === cl && Math.ceil(kr / (rx - 1)) === cr) continue;
+      if (wide && N < 2) continue;
+      var rows = wide ? rx : rx + 1, hb = (Hc - GAP) * (wide ? 0.5 : 0.58);
+      var bw = (Wc - (N - 1) * GAP) / N, bhMax = (hb - (rows - 1) * GAP) / rows;
+      var cand = { kind: wide ? "flank" : "two", rx: rx, N: N, rows: rows, cols: 2 * N, bw: bw, bhMax: bhMax, score: Math.min(bw, bhMax) };
+      cands.push(cand); if (cand.score > top) top = cand.score;
+    }
+    if (!cands.length) return planCounter(kl, kr, Wc, Hc, true);
+    for (var n = 0; n < cands.length; n++) if (cands[n].score >= top * 0.75) return cands[n];
+    return cands[0];
+  }
+  // 左ブロック(kl 個の追加)と右ブロック(kr 個の追加)の、各ボタンの位置(index 0 が ±1)。
+  // row: 全部を1段(左は外側から中央へ、右は中央から外側へ)。
+  // two / flank: ±1 は上段(two)か数値の両隣(flank)。追加分は2行目以降で、左右を半分ずつ使い、
+  //   各ブロック内は上から下へ数えて、下まで来たら次の列へ移る(列は中央に近い側から外側へ)
+  function slotPos(P, kl, kr) {
+    var left = [], right = [], j;
+    if (P.kind === "row") {
+      for (j = 0; j <= kl; j++) left.push({ row: 1, col: 1 + kl - j, span: 1 });
+      for (j = 0; j <= kr; j++) right.push({ row: 1, col: kl + 2 + j, span: 1 });
+      return { left: left, right: right };
+    }
+    var rx = P.rx, cl = Math.ceil(kl / rx), N = P.N;
+    P.f = Math.max(1, Math.min(N - 1, Math.round(2 * N * 0.27)));
+    if (P.split) { // ±1 は両隣。2行目は、各側のいちばん低い追加(左右に半分ずつ)。3行目は、残りを横並び
+      left.push({ row: 1, col: 1, span: P.f }); right.push({ row: 1, col: 2 * N - P.f + 1, span: P.f });
+      left.push({ row: 2, col: 1, span: N }); right.push({ row: 2, col: N + 1, span: N });
+      for (j = 2; j <= kl; j++) left.push({ row: 3, col: 2 * (kl - 2 - (j - 2)) + 1, span: 2 });
+      for (j = 2; j <= kr; j++) right.push({ row: 3, col: 2 * (kl - 1 + (j - 2)) + 1, span: 2 });
+      return { left: left, right: right };
+    }
+    if (P.kind === "flank") { left.push({ row: 1, col: 1, span: P.f }); right.push({ row: 1, col: 2 * N - P.f + 1, span: P.f }); }
+    else { left.push({ row: 1, col: 1, span: N }); right.push({ row: 1, col: N + 1, span: N }); }
+    for (j = 1; j <= kl; j++) left.push({ row: 2 + (j - 1) % rx, col: 2 * (cl - 1 - Math.floor((j - 1) / rx)) + 1, span: 2 });
+    for (j = 1; j <= kr; j++) right.push({ row: 2 + (j - 1) % rx, col: 2 * (cl + Math.floor((j - 1) / rx)) + 1, span: 2 });
+    return { left: left, right: right };
+  }
+  function layoutSteps() {
+    Array.prototype.forEach.call(document.querySelectorAll(".counter"), function (c) {
+      var st = c.querySelector(".steps"), b = st.children, mins = [], pls = [];
+      Array.prototype.forEach.call(b, function (el) { (+el.dataset.d < 0 ? mins : pls).push(el); });
+      var swap = swapOf(+b[0].dataset.p), left = swap ? pls : mins, right = swap ? mins : pls;
+      var kl = left.length - 1, kr = right.length - 1, Wc = c.clientWidth - 12, Hc = c.clientHeight - 12;
+      var plain = kl === 0 && kr === 0; // ±1 だけ: これまでと同じ見た目
+      var P = plain ? { kind: "row", rows: 1, cols: 2 } : planCounter(kl, kr, Wc, Hc);
+      var flank = P.kind === "flank", rows = P.rows, bhF = 0, Hb = 0;
+      var pos = slotPos(P, kl, kr);
+      if (!plain) {
+        bhF = Math.min(P.bhMax, Math.max(P.bw, 40));
+        if (!flank) bhF = Math.max(bhF, Math.min(((Hc - GAP) * 0.4 - (rows - 1) * GAP) / rows, P.bhMax));
+        Hb = rows * bhF + (rows - 1) * GAP;
+      }
+      var rowH = Hc - GAP - Hb;
+      c.style.gridTemplateRows = plain ? "" : "minmax(0, 1fr) " + Hb + "px";
+      st.style.gridRow = flank ? "1 / -1" : "";
+      st.style.gridTemplateColumns = "repeat(" + P.cols + ", minmax(0, 1fr))";
+      st.style.gridTemplateRows = flank ? "minmax(0, 1fr) repeat(" + P.rx + ", " + bhF + "px)" : "repeat(" + rows + ", minmax(0, 1fr))";
+      if (plain) { st.style.removeProperty("--sf"); c.style.removeProperty("--vf"); }
+      else {
+        st.style.setProperty("--sf", Math.max(9, Math.min(bhF * 0.45, P.bw * 0.42)) + "px");
+        var vf = Math.min(c.clientHeight * 0.32, c.clientWidth * 0.38, rowH * 0.78);
+        if (flank) { // 数値は、両隣のボタンの間に収める
+          var colw = (Wc - (P.cols - 1) * GAP) / P.cols, flankW = P.f * colw + (P.f - 1) * GAP;
+          var len = Math.max(2, String(c.querySelector(".value").textContent).length);
+          var icon = c.clientHeight - 12 <= 120 ? 34 : 0; // マスが低いときは、アイコンが数値の横に入る
+          vf = Math.min(vf, (Wc - 2 * flankW - 2 * GAP - icon) / (len * 0.62));
+        }
+        c.style.setProperty("--vf", Math.max(12, vf) + "px");
+      }
+      var put = function (el, p) { el.style.gridRow = p.row; el.style.gridColumn = p.col + (p.span > 1 ? " / span " + p.span : ""); el.style.alignSelf = ""; el.style.height = ""; };
+      left.forEach(function (el, j) { put(el, pos.left[j]); });
+      right.forEach(function (el, j) { put(el, pos.right[j]); });
+      if (flank) { // 両隣の ±1 は、数値の行の中央に、少し高めに置く
+        var fh = Math.min(rowH, Math.max(bhF * 1.25, 44)) + "px";
+        [left[0], right[0]].forEach(function (el) { el.style.alignSelf = "center"; el.style.height = fh; });
+      }
+      // 重なりの確認: アイコン(ラベル)・数値・ボタンが重なるときは、ラベルを隠して数値だけにする。
+      // それでも数値とボタンが重なるときは、重ならなくなるまで数値を小さくする
+      var lab = c.querySelector(".label"), val = c.querySelector(".value");
+      lab.style.display = "";
+      var hit = function (x, y) { var r1 = x.getBoundingClientRect(), r2 = y.getBoundingClientRect(); return r1.left < r2.right - 0.5 && r1.right > r2.left + 0.5 && r1.top < r2.bottom - 0.5 && r1.bottom > r2.top + 0.5; };
+      var clash = function (el) { return Array.prototype.some.call(b, function (btn) { return hit(el, btn); }); };
+      if (clash(lab) || hit(lab, val)) lab.style.display = "none";
+      for (var t = 0; t < 8 && clash(val); t++) {
+        var fs = parseFloat(getComputedStyle(val).fontSize);
+        if (fs <= 12) break;
+        c.style.setProperty("--vf", Math.max(12, fs * 0.9) + "px");
+      }
+    });
+  }
+
+  function counterHtml(pi, kind) {
+    return '<div class="counter ' + kind + '">' +
+      '<div class="mid"><div class="label"><span class="ico">' + ICONS[kind] + '</span><span class="nm">' + KINDS[kind] + "</span></div>" +
+      '<div class="value" aria-live="polite">' + S.players[pi][kind] + "</div></div>" +
+      '<div class="steps">' + stepsHtml(pi, kind) + "</div></div>";
+  }
+
+  function logItems(list, showWho) {
+    if (!list.length) return '<li class="empty">記録なし</li>';
+    return list.slice(0, LOG_MAX).map(function (e) {
+      var d = e.to - e.from;
+      var who = showWho ? NAMES[e.p] + " " : "";
+      return '<li><span class="t">' + hhmm(e.ts) + '<span class="s">' + ss(e.ts) + "</span></span><span>" + escapeHtml(who) + KINDS[e.k] + '<span class="ft"> ' + e.from + "→" + e.to + "</span>" +
+        '</span><span class="chg" style="color:var(--' + e.k + ')">' + sign(d) + "</span></li>";
+    }).join("");
+  }
+
+  function logPanelHtml(pi) {
+    var list = visLog().filter(function (e) { return e.p === pi; });
+    return '<aside class="logpanel" aria-label="変更ログ"><h2><span>ログ</span>' +
+      (pi === 0 ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
+      '</h2><ol class="log">' + logItems(list, false) + "</ol>" +
+      (S.mode === "solo" ? '<div class="logtools"><button type="button" class="lt" data-act="undo"' + (S.ops.length ? "" : " disabled") + '>↶ 戻す</button>' +
+        '<button type="button" class="lt warn" data-act="reset">リセット</button></div>' : "") + "</aside>";
+  }
+
+  function render() {
+    var solo = S.mode === "solo";
+    var count = solo ? 1 : 2;
+    var html = "";
+    // 二人モード: 左=相手(180度回転)、右=自分
+    var order = solo ? [0] : [1, 0];
+    order.forEach(function (i) {
+      var oppo = !solo && i === 1;
+      html += '<article class="player' + (oppo && S.orient === "face" ? ' flip' : '') + (oppo && S.orient === "same" ? ' lswap' : '') + '">' + counterHtml(i, "life") + counterHtml(i, "food") + counterHtml(i, "mat") + logPanelHtml(i) + "</article>";
+    });
+    html += '<div class="side"><button type="button" class="sbtn sm" data-menu aria-label="メニューを開く">⋯</button>' +
+      '<button type="button" class="sbtn night" data-act="night" aria-pressed="' + S.night + '" aria-label="夜">夜</button>' +
+      '<button type="button" class="sbtn" data-act="undo"' + (S.ops.length ? "" : " disabled") + '>元に戻す</button>' +
+      '<button type="button" class="sbtn warn" data-act="reset">リセット</button></div>';
+    $("stage").innerHTML = html;
+    $("stage").classList.toggle("solo", solo);
+    $("stage").classList.toggle("center", S.center);
+
+    $("mode-solo").setAttribute("aria-pressed", solo);
+    $("mode-two").setAttribute("aria-pressed", !solo);
+    document.documentElement.classList.toggle("night", S.night);
+    // 二人用の設定は、一人のときは消さずにグレーアウトする
+    $("orient").disabled = solo;
+    syncCenter();
+    $("orient").setAttribute("aria-pressed", S.orient === "same");
+    $("orient").innerHTML = "対面・縦置き<small>" + (S.orient === "same" ? "縦置き" : "対面") + "</small>";
+    $("center").setAttribute("aria-pressed", S.center);
+    $("theme-dark").setAttribute("aria-pressed", S.theme === "dark");
+    $("theme-light").setAttribute("aria-pressed", S.theme === "light");
+    $("rot").setAttribute("aria-pressed", curRot() > 0);
+    $("swap").innerHTML = "カウンター位置切り替え<small>" + (swapState() === "off" ? "− / +" : "+ / − " + { both: "1P/2P", p1: "1Pのみ", p2: "2Pのみ" }[swapState()]) + "</small>";
+    $("swap").setAttribute("aria-pressed", swapState() !== "off");
+
+    ["life", "food", "mat"].forEach(function (k) {
+      var el = $("s-" + k);
+      if (document.activeElement !== el) el.value = S.start[k];
+    });
+
+    var all = visLog().filter(function (e) { return !solo || e.p === 0; });
+    $("log-count").textContent = all.length ? all.length + "件" : "";
+    $("log").innerHTML = logItems(all, !solo);
+
+    // ±2〜±5 の設定(1P/2P共通のトグルは、1Pのときグレーアウト)
+    var each = S.extraEach && !solo, tgt = each ? S.extraEdit : 0;
+    $("sg").setAttribute("aria-pressed", S.extraSign === "both");
+    $("sg").innerHTML = "±同時<small>" + (S.extraSign === "both" ? "オン" : "オフ(±個別)") + "</small>";
+    Array.prototype.forEach.call(document.querySelectorAll("#steps-card .exrow"), function (r) { r.hidden = r.dataset.g !== S.extraSign; });
+    $("ex").disabled = solo;
+    $("ex").setAttribute("aria-pressed", !S.extraEach);
+    $("ex").innerHTML = "1P/2P共通<small>" + (!S.extraEach ? "オン" : "オフ(1P/2P個別)") + "</small>";
+    $("ex-me").disabled = !each; $("ex-opp").disabled = !each;
+    $("ex-me").setAttribute("aria-pressed", S.extraEdit === 0); $("ex-opp").setAttribute("aria-pressed", S.extraEdit === 1);
+    Array.prototype.forEach.call(document.querySelectorAll("#steps-card .chip"), function (ch) {
+      ch.setAttribute("aria-pressed", S.extra[tgt][ch.dataset.k][ch.dataset.s].indexOf(+ch.dataset.m) >= 0);
+    });
+    layoutSteps();
+    fitLogSeconds();
+  }
+
+  // メニュー
+  function openMenu() { $("scrim").hidden = false; $("sheet").hidden = false; fitLogSeconds(); }
+  function closeMenu() {
+    $("scrim").hidden = true; $("sheet").hidden = true; syncMenuLayer();
+    if (!S.extraEach || S.extraSign === "both") { discardIndividual(); save(); }
+  }
+  $("close").addEventListener("click", closeMenu);
+  $("scrim").addEventListener("click", closeMenu);
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeMenu(); });
+
+  $("stage").addEventListener("click", function (e) {
+    var a = e.target.closest("[data-act]");
+    if (a) {
+      if (a.dataset.act === "undo") undo();
+      else if (a.dataset.act === "night") { S.night = !S.night; save(); render(); }
+      else resetClick();
+      return;
+    }
+    if (e.target.closest("[data-menu]")) { openMenu(); return; }
+    var b = e.target.closest(".step");
+    if (!b) return;
+    change(+b.dataset.p, b.dataset.k, +b.dataset.d);
+  });
+
+  ["life", "food", "mat"].forEach(function (k) {
+    $("s-" + k).addEventListener("input", function (e) {
+      var v = parseInt(e.target.value, 10);
+      S.start[k] = isNaN(v) || v < 0 ? 0 : v;
+      save();
+    });
+  });
+
+  $("mode-solo").addEventListener("click", function () { S.mode = "solo"; save(); render(); });
+  $("mode-two").addEventListener("click", function () { S.mode = "two"; save(); render(); });
+  $("orient").addEventListener("click", function () { S.orient = S.orient === "same" ? "face" : "same"; save(); render(); });
+  $("center").addEventListener("click", function () { S.center = !S.center; save(); render(); });
+  $("sg").addEventListener("click", function () { S.extraSign = S.extraSign === "both" ? "each" : "both"; save(); render(); });
+  $("ex").addEventListener("click", function () {
+    S.extraEach = !S.extraEach;
+    if (S.extraEach) S.extraEdit = 0;
+    save(); render();
+  });
+  $("ex-me").addEventListener("click", function () { S.extraEdit = 0; render(); });
+  $("ex-opp").addEventListener("click", function () { S.extraEdit = 1; render(); });
+  $("steps-card").addEventListener("click", function (e) {
+    var ch = e.target.closest(".chip");
+    if (!ch) return;
+    var a = S.extra[S.extraEach && S.mode !== "solo" ? S.extraEdit : 0][ch.dataset.k][ch.dataset.s], m = +ch.dataset.m, i = a.indexOf(m);
+    if (i >= 0) a.splice(i, 1); else { a.push(m); a.sort(); }
+    discardIndividual();
+    save(); render();
+  });
+  function applyTheme() { document.documentElement.setAttribute("data-theme", S.theme); }
+  $("theme-dark").addEventListener("click", function () { S.theme = "dark"; save(); applyTheme(); render(); });
+  $("theme-light").addEventListener("click", function () { S.theme = "light"; save(); applyTheme(); render(); });
+
+  // 一時メッセージ(3.5秒で消える)
+  var toastTimer = null;
+  function toast(t) {
+    var m = $("toast"); m.textContent = t; m.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { m.hidden = true; }, 3500);
+  }
+
+  // 画面を消さない(Wake Lock)
+  var lock = null, wantLock = false;
+  async function acquire() {
+    try {
+      if (!("wakeLock" in navigator)) throw new Error("unsupported");
+      lock = await navigator.wakeLock.request("screen");
+      lock.addEventListener("release", function () { lock = null; });
+    } catch (err) {
+      wantLock = false;
+      $("wake").setAttribute("aria-pressed", "false");
+      toast("この端末では画面の常時点灯を使えませんでした");
+    }
+  }
+  $("wake").addEventListener("click", async function () {
+    if (wantLock) {
+      wantLock = false;
+      if (lock) { try { await lock.release(); } catch (e) {} lock = null; }
+      this.setAttribute("aria-pressed", "false");
+    } else {
+      wantLock = true;
+      this.setAttribute("aria-pressed", "true");
+      await acquire();
+    }
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (wantLock && !lock && document.visibilityState === "visible") acquire();
+  });
+
+  // 縦固定の端末向け: メニューの「横画面」で画面全体を 90度回転して横レイアウトで表示する
+  // 回転設定は、端末が縦のとき(rotP)と横のとき(rotL)で個別に保存する
+  function isPortrait() { return window.innerHeight >= window.innerWidth; }
+  // メニュー層の向きをいまの回転に合わせる(メニューを開いている間は呼ばれない)
+  // 「左傾き」「右傾き」の案内: スマホが傾くアニメーションを少しの間だけ重ねて表示する
+  var tiltTimer = null;
+  // from→to: スマホの絵が回る角度(度)。負=左へ、正=右へ傾く。縦に戻すときは傾いた状態から 0 へ。
+  // wide=true: ブラウザが横向きのとき(横向きのタブレットの絵)、false: ブラウザが縦向きのとき(スマホの絵)
+  function showTilt(from, to, text, sub, wide) {
+    var el = $("tilt"), ph = $("tiltPhone");
+    $("icoWide").style.display = wide ? "block" : "none";
+    $("icoTall").style.display = wide ? "none" : "block";
+    el.classList.remove("show");
+    ph.style.setProperty("--from", from + "deg");
+    ph.style.setProperty("--to", to + "deg");
+    $("tiltText").textContent = text;
+    $("tiltSub").textContent = sub || "";
+    void el.offsetWidth;
+    el.classList.add("show");
+    clearTimeout(tiltTimer);
+    tiltTimer = setTimeout(function () { el.classList.remove("show"); }, 2200);
+  }
+  function syncMenuLayer() {
+    var rot = curRot();
+    var el = $("menuLayer");
+    el.classList.toggle("ml1", rot === 1);
+    el.classList.toggle("ml2", rot === 2);
+  }
+  function curRot() { return isPortrait() ? S.rotP : S.rotL; }
+  // 中央置きは二人専用(一人のときはグレーアウト)。横・縦どちらのレイアウトでも使える
+  function syncCenter() {
+    $("center").disabled = S.mode === "solo";
+  }
+  function applyLayout() {
+    // 実際の向きと、その向き用の回転設定から、いま表示しているレイアウトが横か縦かを決める。
+    // 90度回転すると、実際が縦なら横レイアウト、実際が横なら縦レイアウトになる。
+    var rot = curRot();
+    var land = isPortrait() ? rot > 0 : rot === 0;
+    var h = document.documentElement.classList;
+    h.toggle("land", land);
+    h.toggle("rot1", rot === 1);
+    h.toggle("rot2", rot === 2);
+    $("rot").innerHTML = "横画面・縦画面<small>" + (rot === 1 ? "左傾き" : rot === 2 ? "右傾き" : "切") + "</small>";
+    $("rot").setAttribute("aria-pressed", rot > 0);
+    if ($("sheet").hidden) syncMenuLayer();
+    syncCenter();
+  }
+  $("rot").addEventListener("click", function () {
+    // 切り替えの順番は、表示の向きを問わず常に 切 → 左傾き → 右傾き → 切(左を先に統一)。
+    var order = [0, 1, 2];
+    var prev = curRot();
+    var next = order[(order.indexOf(prev) + 1) % 3];
+    var wasLand = !isPortrait(); // アイコンはブラウザが縦ならスマホ、横なら横向きのタブレット(左・右・戻すすべて同じ)
+    if (isPortrait()) S.rotP = next; else S.rotL = next;
+    // 回転を切り替えたときは、表示の向きを問わず「左に傾けてください」「右に傾けてください」(1=左、2=右)。
+    // 元に戻すときは、傾いた絵が、まっすぐに戻る「傾きを戻してください」を出す。
+    if (next > 0) showTilt(0, next === 1 ? -90 : 90, next === 1 ? "左に傾けてください" : "右に傾けてください", "", wasLand);
+    else showTilt(prev === 1 ? -90 : 90, 0, "傾きを戻してください", "", wasLand);
+    save(); applyLayout(); render();
+  });
+  $("swap").addEventListener("click", function () {
+    S.swap = nextSwap(); save(); applyLayout(); render();
+  });
+  // メニューのボタンの押し表現: 押している間だけ .pressed を付ける。
+  // 指をボタンの外へずらしたとき、スクロールを始めたとき(pointercancel)、離したときは元に戻す。
+  var pressedEl = null;
+  function clearPress() {
+    if (pressedEl) { pressedEl.classList.remove("pressed"); pressedEl = null; }
+  }
+  var MENU_BTN = ".tool, .close, .mode button";
+  $("sheet").addEventListener("pointerdown", function (e) {
+    var b = e.target.closest(MENU_BTN);
+    clearPress();
+    if (!b || b.disabled) return;
+    pressedEl = b; b.classList.add("pressed");
+  });
+  $("sheet").addEventListener("pointermove", function (e) {
+    if (pressedEl && e.target.closest(MENU_BTN) !== pressedEl) clearPress();
+  });
+  $("sheet").addEventListener("scroll", clearPress, { passive: true });
+  $("sheet").addEventListener("touchmove", clearPress, { passive: true });
+  document.addEventListener("pointerup", clearPress);
+  document.addEventListener("pointercancel", clearPress);
+  window.addEventListener("blur", clearPress);
+  window.addEventListener("resize", function () { applyLayout(); layoutSteps(); fitLogSeconds(); });
+  applyTheme();
+  applyLayout();
+  render();
+})();
+</script>
+
+</body></html>

@@ -305,7 +305,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     <h2>同期 <span id="sy-state">未接続</span></h2>
     <div class="setting syf">
       <label for="sy-room">部屋コード</label>
-      <input type="text" id="sy-room" maxlength="6" placeholder="英数字6桁" autocapitalize="characters" autocomplete="off" spellcheck="false" style="width:6.5em">
+      <input type="text" id="sy-room" placeholder="英数字6桁" autocapitalize="characters" autocomplete="off" spellcheck="false" style="width:6.5em">
     </div>
     <div class="syhint" id="sy-hint">新しく作ると、ランダムで自動生成されます</div>
     <div class="setting syf">
@@ -451,7 +451,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     return out;
   }
   function cleanSync(o) {
-    return o && typeof o === "object" && typeof o.room === "string" && /^[0-9a-f]{6}$/.test(o.room) && typeof o.pw === "string" && /^[0-9]{4}$/.test(o.pw) ? { room: o.room, pw: o.pw } : null;
+    return o && typeof o === "object" && typeof o.room === "string" && /^[0-9a-z]{6}$/.test(o.room) && typeof o.pw === "string" && /^[0-9]{4}$/.test(o.pw) ? { room: o.room, pw: o.pw } : null;
   }
   // ログから、いまの数値・表示するログ・「元に戻す」の対象を計算する
   function calcOn(list, all, base) {
@@ -686,7 +686,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   // ---- 通信(Trystero) ----
-  var net = { room: null, act: null, peers: {}, suspended: false, since: Date.now(), adopted: false, adoptWait: null, adoptTimer: null };
+  var net = { room: null, act: null, peers: {}, suspended: false, since: Date.now(), adopted: false, adoptWait: null, adoptTimer: null, probe: null, kept: false };
   function hello() { return { t: "h", have: S.have, since: net.since, dev: S.dev }; }
   // 自分が「あとから入った側」か(あとから入った側が、前からいる端末の状態を受け取る)。ほぼ同時なら、端末IDで決める
   function isLater(m) {
@@ -705,7 +705,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     for (var i = 0; i < list.length; i += 200) bc({ t: "e", l: list.slice(i, i + 200) }, target);
   }
   function onMsg(m, from) {
-    if (!m || typeof m !== "object") return;
+    if (!m || typeof m !== "object" || net.probe) return;
     if (m.t === "h") { // 相手が持っている番号を受け取って、足りない分を送る
       if (isLater(m) && !net.adopted) { // あとから入った側: 前からいる端末の状態を、まるごと受け取る(自分の履歴は送らない)
         if (!net.adoptWait) {
@@ -755,6 +755,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     }
   }
   function netLeave() {
+    if (net.probe) { clearTimeout(net.probe.timer); net.probe = null; }
     if (net.room) { try { net.room.leave(); } catch (e) {} }
     net.room = null; net.act = null; net.peers = {};
     if (S.rs) clearReset();
@@ -780,24 +781,42 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     net.suspended = false;
     if (S.sync) netJoin(S.sync.room, S.sync.pw); else syncUi();
   }
-  function netJoin(room, pw) {
+  // probe: 新しく作るときの空き確認。先に誰かがいたら(=すでに使われている部屋コード)、作り直す
+  var PROBE_MS = 4000;
+  function probeFail() {
+    var pr = net.probe;
+    if (!pr) return;
+    clearTimeout(pr.timer); net.probe = null;
+    netLeave(); S.sync = null; save();
+    if (pr.tries < 5) createRoom(pr.pw, pr.tries + 1);
+    else { toast("部屋を作れませんでした。もう一度お試しください"); syncUi(); }
+  }
+  function probeOk() { if (net.probe) { net.probe = null; syncUi(); } }
+  function createRoom(pw, tries) {
+    var room = rnd(6, 16);
+    netJoin(room, pw, { tries: tries });
+  }
+  function netJoin(room, pw, probe) {
     netLeave();
     net.suspended = false; net.since = Date.now(); net.adopted = false; clearAdopt();
     if (!window.PalcaSync) { syncUi(); return false; }
     try {
       if (window.PalcaSync.resume) window.PalcaSync.resume();
-      var r = window.PalcaSync.joinRoom({ appId: APP_ID, password: pw, relayConfig: { redundancy: 3 } }, room);
+      if (probe) net.probe = { pw: pw, tries: probe.tries, timer: null };
+      var r = window.PalcaSync.joinRoom({ appId: APP_ID, password: pw, relayConfig: { redundancy: 3 } }, room, { onJoinError: function () { if (net.probe) probeFail(); } });
       net.room = r; net.act = r.makeAction("p");
       net.act.onMessage = function (data, meta) { onMsg(data, meta && meta.peerId); };
-      r.onPeerJoin = function (id) { net.peers[id] = true; bc(hello(), id); syncUi(); };
+      r.onPeerJoin = function (id) { if (net.probe) { probeFail(); return; } net.peers[id] = true; bc(hello(), id); syncUi(); };
       r.onPeerLeave = function (id) {
         delete net.peers[id];
         if (net.adoptWait === id) clearAdopt();
         if (S.rs && !S.rs.init) { /* 要求した端末が抜けたら、待機はタイムアウトに任せる */ }
         tryFinish(); syncUi();
       };
-    } catch (e) { net.room = null; net.act = null; toast("同期を開始できませんでした"); syncUi(); return false; }
-    S.sync = { room: room, pw: pw }; save(); syncUi();
+    } catch (e) { net.probe = null; net.room = null; net.act = null; toast("同期を開始できませんでした"); syncUi(); return false; }
+    S.sync = { room: room, pw: pw }; save(); net.kept = false;
+    if (net.probe) net.probe.timer = setTimeout(probeOk, PROBE_MS);
+    syncUi();
     return true;
   }
 
@@ -1211,44 +1230,55 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   function joinedUrl() { return S.sync ? location.href.split("#")[0] + "#r=" + S.sync.room + "&p=" + S.sync.pw : ""; }
   function syncUi() {
     var on = !!net.room, n = Object.keys(net.peers).length, joined = !!S.sync, url = joinedUrl();
-    $("sy-state").textContent = !window.PalcaSync ? "利用不可" : net.suspended ? "一時停止" : !on ? "未接続" : n ? (n + 1) + "台接続" : "接続待ち";
+    $("sy-state").textContent = !window.PalcaSync ? "利用不可" : net.probe ? "空き確認中…" : net.suspended ? "一時停止" : !on ? "未接続" : n ? (n + 1) + "台接続" : "接続待ち";
     $("sy-room").disabled = joined; $("sy-pw").disabled = joined;
-    if (joined) { $("sy-room").value = S.sync.room.toUpperCase(); $("sy-pw").value = S.sync.pw; }
+    // 空き確認中は、部屋コードを見せない(確認が終わる前に、誰かが入ってしまわないように)
+    if (joined) { $("sy-room").value = net.probe ? "" : S.sync.room.toUpperCase(); $("sy-pw").value = S.sync.pw; }
     $("sy-hint").hidden = joined;
     $("sy-btns").hidden = joined; $("sy-btns2").hidden = !joined;
-    $("sy-qr").disabled = !url || !window.PalcaSync; $("sy-copy").disabled = !url;
-    if (!url) { $("sy-qrbox").hidden = true; $("sy-qr").setAttribute("aria-pressed", "false"); }
+    $("sy-qr").disabled = !url || !window.PalcaSync || !!net.probe; $("sy-copy").disabled = !url || !!net.probe;
+    if (!url || net.probe) { $("sy-qrbox").hidden = true; $("sy-qr").setAttribute("aria-pressed", "false"); }
   }
   function normIn(v) { v = String(v || ""); try { v = v.normalize("NFKC"); } catch (e) {} return v.trim(); }
   function tryJoin(room, pw) {
     room = normIn(room).toLowerCase(); pw = normIn(pw);
-    if (!/^[0-9a-f]{6}$/.test(room)) { toast("部屋コードは、16進数6桁(0〜9、A〜F)です"); return; }
+    if (!/^[0-9a-z]{6}$/.test(room)) { toast("部屋コードは、数字とA〜Zの6桁です"); return; }
     if (!/^[0-9]{4}$/.test(pw)) { toast("パスワードは、数字4桁です"); return; }
     netJoin(room, pw);
   }
   function rnd(n, base) { var s = ""; for (var i = 0; i < n; i++) s += Math.floor(Math.random() * base).toString(base); return s; }
-  // 部屋コードの入力欄: 6桁まで、小文字を入れても大文字に置き換わる(全角も半角にする)
+  // 部屋コードの入力欄: 数字と A〜Z だけ、6桁まで。小文字は大文字に替わる(全角も半角にする)
+  function cleanRoom(v) { return normIn(v).toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6); }
   function fixRoom() {
-    var el = $("sy-room"), pos = el.selectionStart, v = normIn(el.value).replace(/\s+/g, "").toUpperCase().slice(0, 6);
-    if (v !== el.value) { el.value = v; try { el.setSelectionRange(pos, pos); } catch (e) {} }
+    var el = $("sy-room"), pos = el.selectionStart, v = cleanRoom(el.value);
+    if (v !== el.value) {
+      var at = cleanRoom(el.value.slice(0, pos)).length;
+      el.value = v; try { el.setSelectionRange(at, at); } catch (e) {}
+    }
   }
   $("sy-room").addEventListener("input", function (e) { if (!e.isComposing) fixRoom(); });
   $("sy-room").addEventListener("compositionend", fixRoom);
   $("sy-join").addEventListener("click", function () { tryJoin($("sy-room").value, $("sy-pw").value); });
-  // 新しく作る: 部屋コードは、毎回ランダム。パスワードは、入力があればそれを使い、空欄ならランダム
+  // 新しく作る: 部屋コードは、毎回ランダム(すでに使われていたら作り直す)。パスワードは、入力があればそれを使い、空欄ならランダム
   $("sy-new").addEventListener("click", function () {
     var typed = normIn($("sy-pw").value), pw;
     if (typed === "") pw = rnd(4, 10);
     else if (/^[0-9]{4}$/.test(typed)) pw = typed;
     else { toast("パスワードは、数字4桁です(空欄ならランダムで作ります)"); return; }
-    var room = rnd(6, 16);
-    $("sy-room").value = room.toUpperCase(); $("sy-pw").value = pw;
-    tryJoin(room, pw);
+    net.kept = false;
+    createRoom(pw, 1);
   });
+  // 切断: 部屋コードとパスワードは、入力欄に残す(そのまま「つなぐ」で使える)。入力欄を触ろうとしたら、リセットする
   $("sy-leave").addEventListener("click", function () {
+    var room = S.sync ? S.sync.room.toUpperCase() : "", pw = S.sync ? S.sync.pw : "";
     netStop(); net.suspended = false; S.sync = null; save();
-    $("sy-room").value = ""; $("sy-pw").value = "";
+    $("sy-room").value = room; $("sy-pw").value = pw; net.kept = !!room;
     syncUi();
+  });
+  ["sy-room", "sy-pw"].forEach(function (id) {
+    $(id).addEventListener("focus", function () {
+      if (net.kept) { net.kept = false; $("sy-room").value = ""; $("sy-pw").value = ""; }
+    });
   });
   $("sy-qr").addEventListener("click", function () {
     var url = joinedUrl(), box = $("sy-qrbox");
@@ -1297,7 +1327,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   syncUi();
   // QR(または共有のアドレス)から開いたときは、そのまま部屋につなぐ。前回の部屋があれば、つなぎ直す
   (function () {
-    var m = /^#r=([0-9a-fA-F]{6})&p=([0-9]{4})$/.exec(location.hash);
+    var m = /^#r=([0-9a-zA-Z]{6})&p=([0-9]{4})$/.exec(location.hash);
     if (m) { try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {} netJoin(m[1].toLowerCase(), m[2]); }
     else if (S.sync) netJoin(S.sync.room, S.sync.pw);
   })();

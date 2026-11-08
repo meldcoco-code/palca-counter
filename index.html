@@ -367,7 +367,9 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       swap: "off", // off / both(二人) / p1(1Pのみ=自分) / p2(2Pのみ=相手)
       start: { life: 10, food: 0, mat: 0 },
       dev: newId(), // この端末のID(同期で、操作の持ち主を区別する)
-      ents: [], // 操作ログ(全端末ぶん)
+      base: { players: [{ life: 10, food: 0, mat: 0 }, { life: 10, food: 0, mat: 0 }], night: false }, // 上限を超えて畳み込んだ分の数値
+      fold: {}, // 畳み込んだ操作の、持ち主ごとの最後の番号
+      ents: [], // 操作ログ(全端末ぶん。最大 LOG_CAP 件)
       sync: null // {room, pw}: 前回つないだ部屋
     };
   }
@@ -435,11 +437,11 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     return o && typeof o === "object" && typeof o.room === "string" && /^[0-9a-f]{6}$/.test(o.room) && typeof o.pw === "string" && /^[0-9]{4}$/.test(o.pw) ? { room: o.room, pw: o.pw } : null;
   }
   // ログから、いまの数値・表示するログ・「元に戻す」の対象を計算する
-  function calc() {
-    var es = S.ents.slice().sort(cmpEnt), undone = {}, R = null, adds = [], pl, vis = [], last = null, mark = {}, night = false;
-    es.forEach(function (e) { if (e.u) undone[e.u[0] + ":" + e.u[1]] = true; });
+  function calcOn(list, all, base) {
+    var es = list.slice().sort(cmpEnt), undone = {}, R = null, adds = [], pl, vis = [], last = null, mark = {}, night;
+    all.forEach(function (e) { if (e.u) undone[e.u[0] + ":" + e.u[1]] = true; });
     es.forEach(function (e) { if (e.r === 1 && !undone[entKey(e)]) R = e; });
-    pl = R ? clone(R.to) : clone(INIT);
+    pl = R ? clone(R.to) : clone(base.players); night = R ? false : base.night;
     es.forEach(function (e) {
       if (e.u || e.r === 1 || undone[entKey(e)]) return;
       if (R && e.s <= (R.cut[e.d] || 0)) return;
@@ -453,13 +455,30 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     es.forEach(function (e) { if (e === R || mark[entKey(e)]) last = e; });
     return { players: pl, vis: vis, last: last, R: R, night: night };
   }
+  function calc() { return calcOn(S.ents, S.ents, S.base); }
+  // ログが LOG_CAP 件を超えたら、古い順に、数値(base)へ畳み込んで消す
+  var LOG_CAP = 100;
+  function foldOld() {
+    if (S.ents.length <= LOG_CAP) return;
+    var es = S.ents.slice().sort(cmpEnt), P = es.slice(0, es.length - LOG_CAP);
+    var r = calcOn(P, S.ents, S.base);
+    S.base = { players: r.players, night: r.night };
+    P.forEach(function (e) { if (e.s > (S.fold[e.d] || 0)) S.fold[e.d] = e.s; });
+    S.ents = es.slice(P.length);
+    reindex();
+  }
+  function cleanBase(b) {
+    if (!b || typeof b !== "object" || !Array.isArray(b.players) || b.players.length !== 2) return { players: clone(INIT), night: false };
+    return { players: [cleanRes(b.players[0], INIT[0]), cleanRes(b.players[1], INIT[1])], night: b.night === true };
+  }
   function recalc() { C = calc(); S.players = C.players; S.night = C.night; }
   function reindex() {
     S.keys = {}; S.have = {}; S.lc = 0;
+    Object.keys(S.fold).forEach(function (k) { S.have[k] = S.fold[k]; });
     S.ents.forEach(function (e) { S.keys[entKey(e)] = 1; if (e.s > (S.have[e.d] || 0)) S.have[e.d] = e.s; if (e.c > S.lc) S.lc = e.c; });
   }
   function addEnt(e) {
-    if (S.keys[entKey(e)]) return false;
+    if (S.keys[entKey(e)] || e.s <= (S.fold[e.d] || 0)) return false; // 持っている、または、畳み込み済み
     S.ents.push(e); S.keys[entKey(e)] = 1;
     if (e.s > (S.have[e.d] || 0)) S.have[e.d] = e.s;
     if (e.c > S.lc) S.lc = e.c;
@@ -504,6 +523,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       swap: p.swap === true || p.swap === "both" ? "both" : (p.swap === "p1" || p.swap === "p2" ? p.swap : "off"),
       start: cleanRes(p.start, d.start),
       dev: typeof p.dev === "string" && HEX8.test(p.dev) ? p.dev : d.dev,
+      base: hasEnts && p.base && !Array.isArray(p.base) ? cleanBase(p.base) : d.base,
+      fold: hasEnts ? cleanHave(p.fold) : {},
       ents: hasEnts ? cleanEnts(p.ents) : [],
       sync: cleanSync(p.sync)
     };
@@ -521,7 +542,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var raw = localStorage.getItem(KEY);
     if (raw) S = cleanState(JSON.parse(raw));
   } catch (e) {}
-  reindex(); recalc();
+  reindex(); foldOld(); recalc();
   S.rs = null; // リセット待機の状態(保存しない)
   S.extraEdit = 0; // 個別設定で編集中の対象(0=自分, 1=相手)。保存しない
   // 1P/2P共通・±同時のとき、個別の内容は残しておく。破棄(=共通の設定と同じにする)するのは、
@@ -534,7 +555,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   discardIndividual();
   function save() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, dev: S.dev, ents: S.ents, sync: S.sync }));
+      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
     } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
@@ -573,12 +594,17 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   // ---- 操作(ログに足して、全端末に送る) ----
   function append(f) {
     f.d = S.dev; f.s = (S.have[S.dev] || 0) + 1; f.c = S.lc + 1; f.ts = Date.now();
-    addEnt(f); recalc(); save(); render();
+    addEnt(f); foldOld(); recalc(); save(); render();
     bc({ t: "e", l: [f] });
   }
 
+  function busy() {
+    if (net.adoptWait) { toast("同期中です"); return true; }
+    if (S.rs) { toast("リセット待機中です"); return true; }
+    return false;
+  }
   function change(pi, kind, d) {
-    if (S.rs) { toast("リセット待機中です"); return; }
+    if (busy()) return;
     var before = S.players[pi][kind];
     var after = Math.max(0, before + d);
     if (after === before) return;
@@ -586,7 +612,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   function undo() {
-    if (S.rs) { toast("リセット待機中です"); return; }
+    if (busy()) return;
     if (!C.last) return;
     append({ u: [C.last.d, C.last.s] });
   }
@@ -618,7 +644,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     render();
   }
   function resetClick() {
-    if (S.rs) return;
+    if (S.rs || net.adoptWait) return;
     var ids = Object.keys(net.peers);
     if (!net.room || !ids.length) { doReset(); return; }
     var need = {};
@@ -643,7 +669,16 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   // ---- 通信(Trystero) ----
-  var net = { room: null, act: null, peers: {}, suspended: false };
+  var net = { room: null, act: null, peers: {}, suspended: false, since: Date.now(), adopted: false, adoptWait: null, adoptTimer: null };
+  function hello() { return { t: "h", have: S.have, since: net.since, dev: S.dev }; }
+  // 自分が「あとから入った側」か(あとから入った側が、前からいる端末の状態を受け取る)。ほぼ同時なら、端末IDで決める
+  function isLater(m) {
+    if (typeof m.since !== "number" || typeof m.dev !== "string") return false; // 古い版の端末とは、合流で動く
+    if (net.since > m.since + 2000) return true;
+    if (m.since > net.since + 2000) return false;
+    return S.dev > m.dev;
+  }
+  function clearAdopt() { clearTimeout(net.adoptTimer); net.adoptWait = null; render(); }
   var APP_ID = "palca-counter-v1";
   function bc(msg, target) {
     if (!net.act) return;
@@ -655,9 +690,28 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   function onMsg(m, from) {
     if (!m || typeof m !== "object") return;
     if (m.t === "h") { // 相手が持っている番号を受け取って、足りない分を送る
+      if (isLater(m) && !net.adopted) { // あとから入った側: 前からいる端末の状態を、まるごと受け取る(自分の履歴は送らない)
+        if (!net.adoptWait) {
+          net.adoptWait = from;
+          net.adoptTimer = setTimeout(clearAdopt, 5000);
+          render();
+          bc({ t: "g" }, from);
+        }
+        return;
+      }
       var have = cleanHave(m.have);
       var out = S.ents.filter(function (e) { return e.s > (have[e.d] || 0); });
       if (out.length) sendEnts(out, from);
+    } else if (m.t === "g") { // 状態の要求
+      if (!net.adoptWait) bc({ t: "s", base: S.base, fold: S.fold, ents: S.ents }, from);
+    } else if (m.t === "s" && net.adoptWait === from) { // 状態を受け取って、自分の履歴と置き換える
+      clearTimeout(net.adoptTimer);
+      S.ents = cleanEnts(m.ents); S.base = cleanBase(m.base); S.fold = cleanHave(m.fold);
+      S.dev = newId(); // 古い履歴の番号と、衝突しないように
+      net.adopted = true; net.adoptWait = null;
+      if (S.rs) { clearTimeout(S.rs.timer); S.rs = null; }
+      reindex(); recalc(); save(); render();
+      bc(hello(), from);
     } else if (m.t === "e" && Array.isArray(m.l)) {
       var fresh = 0, gotReset = false;
       m.l.slice(0, 200).forEach(function (x) {
@@ -666,7 +720,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       });
       if (fresh) {
         if (S.rs && gotReset) { clearTimeout(S.rs.timer); S.rs = null; }
-        recalc(); save(); render(); tryFinish();
+        foldOld(); recalc(); save(); render(); tryFinish();
       }
     } else if (m.t === "q" && typeof m.id === "string" && HEX8.test(m.id)) { // リセットの要求
       if (S.rs) {
@@ -711,16 +765,17 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
   function netJoin(room, pw) {
     netLeave();
-    net.suspended = false;
+    net.suspended = false; net.since = Date.now(); net.adopted = false; clearAdopt();
     if (!window.PalcaSync) { syncUi(); return false; }
     try {
       if (window.PalcaSync.resume) window.PalcaSync.resume();
       var r = window.PalcaSync.joinRoom({ appId: APP_ID, password: pw, relayConfig: { redundancy: 3 } }, room);
       net.room = r; net.act = r.makeAction("p");
       net.act.onMessage = function (data, meta) { onMsg(data, meta && meta.peerId); };
-      r.onPeerJoin = function (id) { net.peers[id] = true; bc({ t: "h", have: S.have }, id); syncUi(); };
+      r.onPeerJoin = function (id) { net.peers[id] = true; bc(hello(), id); syncUi(); };
       r.onPeerLeave = function (id) {
         delete net.peers[id];
+        if (net.adoptWait === id) clearAdopt();
         if (S.rs && !S.rs.init) { /* 要求した端末が抜けたら、待機はタイムアウトに任せる */ }
         tryFinish(); syncUi();
       };
@@ -972,7 +1027,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var a = e.target.closest("[data-act]");
     if (a) {
       if (a.dataset.act === "undo") undo();
-      else if (a.dataset.act === "night") append({ n: C.night ? 0 : 1 });
+      else if (a.dataset.act === "night") { if (!busy()) append({ n: C.night ? 0 : 1 }); }
       else resetClick();
       return;
     }
@@ -1177,7 +1232,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       clearTimeout(hideTimer);
       // 長く隠れていたら(タイマーが止められていた場合も含む)、つなぎ直す。短ければ、足りない分を確認するだけ
       if (S.sync && (net.suspended || (hiddenAt && Date.now() - hiddenAt >= HIDE_MS))) netResume();
-      else bc({ t: "h", have: S.have });
+      else bc(hello());
       hiddenAt = 0;
     }
   });

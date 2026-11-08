@@ -821,7 +821,12 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   // 表示するログ: 最後のリセットより後の操作のうち、新しい順に最大20件
-  function visLog() { return C.vis.slice().reverse().slice(0, LOG_MAX); }
+  // pi を渡すと、そのプレイヤーの分だけを、新しい順に最大20件(各グリッドが、それぞれ20件)
+  function visLog(pi) {
+    var l = C.vis.slice().reverse();
+    if (pi !== undefined) l = l.filter(function (e) { return e.p === pi; });
+    return l.slice(0, LOG_MAX);
+  }
 
   function stepBtn(pi, kind, d) {
     return '<button type="button" class="step ' + (d > 0 ? "plus" : "minus") + '" data-p="' + pi + '" data-k="' + kind + '" data-d="' + d +
@@ -982,7 +987,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   function logPanelHtml(pi) {
-    var list = visLog().filter(function (e) { return e.p === pi; });
+    var list = visLog(pi);
     return '<aside class="logpanel" aria-label="変更ログ"><h2><span>ログ</span>' +
       (pi === 0 ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
       '</h2><ol class="log">' + logItems(list, false) + "</ol>" +

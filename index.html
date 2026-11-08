@@ -253,6 +253,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
 /* メニュー内ボタン: 押している間は少し縮んで暗くなり、離すと元に戻る */
 .tool.pressed, .close.pressed, .mode button.pressed { filter: brightness(.9); }
+/* 3つ以上を切り替えるボタン: 状態は文字で示し、押している間だけ光る(光りっぱなしにしない) */
+#rot.pressed, #role.pressed, #rot:active, #role:active { filter: none; background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 @media (prefers-reduced-motion: no-preference) {
   .step { transition: background .1s; }
   .tool, .close, .mode button { transition: transform .14s ease, filter .14s ease, background-color .14s ease; }
@@ -272,7 +274,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     <button class="close" id="close" type="button">閉じる</button>
   </div>
   <div class="tools one">
-    <button class="tool" id="role" type="button" aria-pressed="false">自分は1Pです</button>
+    <button class="tool" id="role" type="button">自分は1Pです</button>
   </div>
   <div class="mode" role="group" aria-label="人数">
     <button id="mode-solo" type="button">1P</button>
@@ -285,7 +287,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   <div class="tools">
     <button class="tool" id="swap" type="button" aria-pressed="false">カウンター位置切り替え<small>− / +</small></button>
     <button class="tool" id="wake" type="button" aria-pressed="false">画面を消さない</button>
-    <button class="tool" id="rot" type="button" aria-pressed="false">横画面・縦画面</button>
+    <button class="tool" id="rot" type="button">横画面・縦画面</button>
   </div>
   <div class="mode" role="group" aria-label="画面の色">
     <button id="theme-dark" type="button">ダーク</button>
@@ -1038,7 +1040,6 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     $("stage").classList.toggle("solo", solo);
     $("stage").classList.toggle("guest", S.role === 2);
     $("role").textContent = ["自分は1Pです", "自分は2Pです", "自分はゲストです"][S.role];
-    $("role").setAttribute("aria-pressed", S.role !== 0);
     $("stage").classList.toggle("center", S.center);
 
     $("mode-solo").setAttribute("aria-pressed", solo);
@@ -1052,7 +1053,6 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     $("center").setAttribute("aria-pressed", S.center);
     $("theme-dark").setAttribute("aria-pressed", S.theme === "dark");
     $("theme-light").setAttribute("aria-pressed", S.theme === "light");
-    $("rot").setAttribute("aria-pressed", curRot() > 0);
     $("swap").innerHTML = "カウンター位置切り替え<small>" + (swapState() === "off" ? "− / +" : "+ / − " + { both: "1P/2P", p1: "1Pのみ", p2: "2Pのみ" }[swapState()]) + "</small>";
     $("swap").setAttribute("aria-pressed", swapState() !== "off");
 
@@ -1218,7 +1218,6 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     h.toggle("rot1", rot === 1);
     h.toggle("rot2", rot === 2);
     $("rot").innerHTML = "横画面・縦画面<small>" + (rot === 1 ? "左傾き" : rot === 2 ? "右傾き" : "切") + "</small>";
-    $("rot").setAttribute("aria-pressed", rot > 0);
     if ($("sheet").hidden) syncMenuLayer();
     syncCenter();
   }

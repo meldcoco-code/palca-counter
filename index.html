@@ -184,6 +184,13 @@ html:not(.land) .stage:not(.solo) .logpanel .t { display: inline; }
 }
 :root { --sync: #56B4E9; } /* 同期の枠: 色の見分けがつきにくくても見えやすい青(Okabe-Ito) */
 :root[data-theme="light"] { --sync: #0072B2; }
+:root { --p1c: #56B4E9; --p2c: #E58FC2; } /* ログの「1P」「2P」の文字色(色の見分けがつきにくくても、青とピンクで区別しやすい) */
+:root[data-theme="light"] { --p1c: #0072B2; --p2c: #B0357F; }
+.who { font-weight: 800; }
+.who.p0 { color: var(--p1c); }
+.who.p1 { color: var(--p2c); }
+.stage.guest .step, .stage.guest [data-act] { opacity: .45; pointer-events: none; } /* ゲストは観戦のみ */
+.tools.one { grid-template-columns: 1fr; }
 #sync-card { border: 2px solid var(--sync); }
 #sync-card .syf { flex-wrap: nowrap; }
 #sync-card .syf label { flex: none; min-width: 5.4em; }
@@ -263,6 +270,9 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   <div class="sheet-head">
     <h1>メニュー</h1>
     <button class="close" id="close" type="button">閉じる</button>
+  </div>
+  <div class="tools one">
+    <button class="tool" id="role" type="button" aria-pressed="false">自分は1Pです</button>
   </div>
   <div class="mode" role="group" aria-label="人数">
     <button id="mode-solo" type="button">1P</button>
@@ -383,6 +393,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: 0,
       swap: "off", // off / both(二人) / p1(1Pのみ=自分) / p2(2Pのみ=相手)
       start: { life: 10, food: 0, mat: 0 },
+      role: 0, // 自分の役割: 0=1P / 1=2P / 2=ゲスト(観戦)
+      roleRoom: "", // 役割を自動で決めた部屋(同じ部屋に入り直しても、決め直さない)
       dev: newId(), // この端末のID(同期で、操作の持ち主を区別する)
       base: { players: [{ life: 10, food: 0, mat: 0 }, { life: 10, food: 0, mat: 0 }], night: false }, // 上限を超えて畳み込んだ分の数値
       fold: {}, // 畳み込んだ操作の、持ち主ごとの最後の番号
@@ -539,6 +551,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: cleanRot(p.rotL),
       swap: p.swap === true || p.swap === "both" ? "both" : (p.swap === "p1" || p.swap === "p2" ? p.swap : "off"),
       start: cleanRes(p.start, d.start),
+      role: p.role === 1 || p.role === 2 ? p.role : 0,
+      roleRoom: typeof p.roleRoom === "string" && /^[0-9a-z]{6}$/.test(p.roleRoom) ? p.roleRoom : "",
       dev: typeof p.dev === "string" && HEX8.test(p.dev) ? p.dev : d.dev,
       base: hasEnts && p.base && !Array.isArray(p.base) ? cleanBase(p.base) : d.base,
       fold: hasEnts ? cleanHave(p.fold) : {},
@@ -572,7 +586,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   discardIndividual();
   function save() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
+      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, role: S.role, roleRoom: S.roleRoom, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
     } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
@@ -616,6 +630,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   function busy() {
+    if (S.role === 2) { toast("ゲストは操作できません"); return true; }
     if (net.adoptWait) { toast("同期中です"); return true; }
     if (S.rs) { toast("リセット待機中です"); return true; }
     return false;
@@ -661,7 +676,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     render();
   }
   function resetClick() {
-    if (S.rs || net.adoptWait) return;
+    if (S.rs || net.adoptWait || S.role === 2) return;
     var ids = Object.keys(net.peers);
     if (!net.room || !ids.length) { doReset(); return; }
     var need = {};
@@ -720,11 +735,15 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       var out = S.ents.filter(function (e) { return e.s > (have[e.d] || 0); });
       if (out.length) sendEnts(out, from);
     } else if (m.t === "g") { // 状態の要求
-      if (!net.adoptWait) bc({ t: "s", base: S.base, fold: S.fold, ents: S.ents }, from);
+      if (!net.adoptWait) bc({ t: "s", base: S.base, fold: S.fold, ents: S.ents, n: Object.keys(net.peers).length + 1 }, from);
     } else if (m.t === "s" && net.adoptWait === from) { // 状態を受け取って、自分の履歴と置き換える
       clearTimeout(net.adoptTimer);
       S.ents = cleanEnts(m.ents); S.base = cleanBase(m.base); S.fold = cleanHave(m.fold);
       S.dev = newId(); // 古い履歴の番号と、衝突しないように
+      // その部屋に初めて入ったときだけ、入った順で役割を決める(2番目=2P、3番目以降=ゲスト)。入り直しでは、決め直さない
+      if (isInt(m.n, 1000) && S.sync && S.roleRoom !== S.sync.room) {
+        S.role = m.n >= 3 ? 2 : (m.n === 2 ? 1 : 0); S.roleRoom = S.sync.room;
+      }
       net.adopted = true; net.adoptWait = null;
       if (S.rs) { clearTimeout(S.rs.timer); S.rs = null; }
       reindex(); recalc(); save(); render();
@@ -791,7 +810,12 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     if (pr.tries < 5) createRoom(pr.pw, pr.tries + 1);
     else { toast("部屋を作れませんでした。もう一度お試しください"); syncUi(); }
   }
-  function probeOk() { if (net.probe) { net.probe = null; syncUi(); } }
+  // 部屋を作った端末が、1P
+  function probeOk() {
+    if (!net.probe) return;
+    net.probe = null; S.role = 0; S.roleRoom = S.sync ? S.sync.room : "";
+    save(); render(); syncUi();
+  }
   function createRoom(pw, tries) {
     var room = rnd(6, 16);
     netJoin(room, pw, { tries: tries });
@@ -988,8 +1012,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
   function logPanelHtml(pi) {
     var list = visLog(pi);
-    return '<aside class="logpanel" aria-label="変更ログ"><h2><span>ログ</span>' +
-      (pi === 0 ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
+    return '<aside class="logpanel" aria-label="変更ログ"><h2><span><span class="who p' + pi + '">' + (pi + 1) + 'P</span>ログ</span>' +
+      (pi === (S.mode !== "solo" && S.role === 1 ? 1 : 0) ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
       '</h2><ol class="log">' + logItems(list, false) + "</ol>" +
       (S.mode === "solo" ? '<div class="logtools"><button type="button" class="lt" data-act="undo"' + (canUndo() ? "" : " disabled") + '>↶ 戻す</button>' +
         '<button type="button" class="lt warn" data-act="reset">' + (S.rs ? "待機中…" : "リセット") + '</button></div>' : "") + "</aside>";
@@ -999,10 +1023,11 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var solo = S.mode === "solo";
     var count = solo ? 1 : 2;
     var html = "";
-    // 二人モード: 左=相手(180度回転)、右=自分
-    var order = solo ? [0] : [1, 0];
+    // 二人モード: 左(縦は上)=相手(対面なら180度回転)、右(縦は下)=自分。自分が2Pなら、1Pと2Pの位置が入れ替わる
+    var me = !solo && S.role === 1 ? 1 : 0;
+    var order = solo ? [0] : (me === 1 ? [0, 1] : [1, 0]);
     order.forEach(function (i) {
-      var oppo = !solo && i === 1;
+      var oppo = !solo && i !== me;
       html += '<article class="player' + (oppo && S.orient === "face" ? ' flip' : '') + (oppo && S.orient === "same" ? ' lswap' : '') + '">' + counterHtml(i, "life") + counterHtml(i, "food") + counterHtml(i, "mat") + logPanelHtml(i) + "</article>";
     });
     html += '<div class="side"><button type="button" class="sbtn sm" data-menu aria-label="メニューを開く">⋯</button>' +
@@ -1011,6 +1036,9 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       '<button type="button" class="sbtn warn" data-act="reset">' + (S.rs ? "待機中…" : "リセット") + '</button></div>';
     $("stage").innerHTML = html;
     $("stage").classList.toggle("solo", solo);
+    $("stage").classList.toggle("guest", S.role === 2);
+    $("role").textContent = ["自分は1Pです", "自分は2Pです", "自分はゲストです"][S.role];
+    $("role").setAttribute("aria-pressed", S.role !== 0);
     $("stage").classList.toggle("center", S.center);
 
     $("mode-solo").setAttribute("aria-pressed", solo);
@@ -1276,7 +1304,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   // 切断: 部屋コードとパスワードは、入力欄に残す(そのまま「つなぐ」で使える)。入力欄を触ろうとしたら、リセットする
   $("sy-leave").addEventListener("click", function () {
     var room = S.sync ? S.sync.room.toUpperCase() : "", pw = S.sync ? S.sync.pw : "";
-    netStop(); net.suspended = false; S.sync = null; save();
+    netStop(); net.suspended = false; S.sync = null; S.role = 0; S.roleRoom = ""; save(); render();
     $("sy-room").value = room; $("sy-pw").value = pw; net.kept = !!room;
     syncUi();
   });
@@ -1304,6 +1332,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       if (done) res(); else rej(new Error("copy"));
     });
   }
+  // 自分の役割の切り替え(制限なし。自己判断): 1P → 2P → ゲスト → 1P
+  $("role").addEventListener("click", function () { S.role = (S.role + 1) % 3; save(); render(); });
   $("sy-copy").addEventListener("click", function () {
     var url = joinedUrl();
     if (!url) return;

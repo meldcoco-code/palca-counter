@@ -406,6 +406,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: 0,
       swap: "off", // off / both(二人) / p1(1Pのみ=自分) / p2(2Pのみ=相手)
       start: { life: 10, food: 0, mat: 0 },
+      wake: false, // 画面を消さない
       oppView: false, // 一人用: ログのグリッドに、ログではなく、相手の数値を出す
       role: 0, // 自分の役割: 0=1P / 1=2P / 2=ゲスト(観戦)
       roleRoom: "", // 役割を自動で決めた部屋(同じ部屋に入り直しても、決め直さない)
@@ -565,6 +566,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: cleanRot(p.rotL),
       swap: p.swap === true || p.swap === "both" ? "both" : (p.swap === "p1" || p.swap === "p2" ? p.swap : "off"),
       start: cleanRes(p.start, d.start),
+      wake: p.wake === true,
       oppView: p.oppView === true,
       role: p.role === 1 || p.role === 2 ? p.role : 0,
       roleRoom: typeof p.roleRoom === "string" && /^[0-9a-z]{6}$/.test(p.roleRoom) ? p.roleRoom : "",
@@ -601,7 +603,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   discardIndividual();
   function save() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, oppView: S.oppView, role: S.role, roleRoom: S.roleRoom, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
+      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, wake: S.wake, oppView: S.oppView, role: S.role, roleRoom: S.roleRoom, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
     } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
@@ -1177,32 +1179,43 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   }
 
   // 画面を消さない(Wake Lock)
-  var lock = null, wantLock = false;
-  async function acquire() {
+  // 別の画面に切り替えると、ブラウザが自動で解除する。戻ったときに取り直し、取り直せなかった場合は、
+  // オンのままにして、次の画面操作で取り直す(失敗してもオフに戻さない)。最初に押したときの失敗だけ、オフに戻して知らせる
+  var lock = null, wantLock = false, acquiring = false;
+  var wakeOk = "wakeLock" in navigator;
+  function wakeUi() { $("wake").setAttribute("aria-pressed", wantLock ? "true" : "false"); }
+  async function acquire(first) {
+    if (acquiring || lock) return;
+    acquiring = true;
     try {
-      if (!("wakeLock" in navigator)) throw new Error("unsupported");
-      lock = await navigator.wakeLock.request("screen");
-      lock.addEventListener("release", function () { lock = null; });
+      if (!wakeOk) throw new Error("unsupported");
+      var l = await navigator.wakeLock.request("screen");
+      lock = l;
+      l.addEventListener("release", function () { if (lock === l) lock = null; });
     } catch (err) {
-      wantLock = false;
-      $("wake").setAttribute("aria-pressed", "false");
-      toast("この端末では画面の常時点灯を使えませんでした");
+      if (first || !wakeOk) {
+        wantLock = false; S.wake = false; save(); wakeUi();
+        toast("この端末では画面の常時点灯を使えませんでした");
+      }
     }
+    acquiring = false;
   }
+  function wakeRetry() { if (wantLock && !lock && !acquiring && document.visibilityState === "visible") acquire(false); }
   $("wake").addEventListener("click", async function () {
     if (wantLock) {
-      wantLock = false;
+      wantLock = false; S.wake = false; save();
       if (lock) { try { await lock.release(); } catch (e) {} lock = null; }
-      this.setAttribute("aria-pressed", "false");
+      wakeUi();
     } else {
-      wantLock = true;
-      this.setAttribute("aria-pressed", "true");
-      await acquire();
+      wantLock = true; S.wake = true; save(); wakeUi();
+      await acquire(true);
     }
   });
-  document.addEventListener("visibilitychange", function () {
-    if (wantLock && !lock && document.visibilityState === "visible") acquire();
-  });
+  document.addEventListener("visibilitychange", wakeRetry);
+  window.addEventListener("pageshow", wakeRetry);
+  ["pointerdown", "touchend", "keydown"].forEach(function (ev) { document.addEventListener(ev, wakeRetry, { passive: true }); });
+  // 前回オンにしていたら、そのままオン(読み込み直しのあとは、最初の画面操作で取る)
+  if (S.wake && wakeOk) { wantLock = true; wakeUi(); }
 
   // 縦固定の端末向け: メニューの「横画面」で画面全体を 90度回転して横レイアウトで表示する
   // 回転設定は、端末が縦のとき(rotP)と横のとき(rotL)で個別に保存する

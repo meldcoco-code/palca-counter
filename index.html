@@ -870,7 +870,13 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
   var GAP = 6;
   // 「−/+ の位置を入れ替える」対象か(pi: 0=1P(自分), 1=2P(相手))
-  function swapOf(pi) { var st = swapState(); return st === "both" || (st === "p1" && pi === 0) || (st === "p2" && pi === 1); }
+  // 自分のプレイヤー番号(0=1P、1=2P)。一人用でも、自分が2Pなら、2Pのカウンターを出す
+  function meIdx() { return S.role === 1 ? 1 : 0; }
+  function swapOf(pi) {
+    var st = swapState();
+    if (S.mode === "solo") return st === "p1" && pi === meIdx(); // 一人用: 出ているのが自分のカウンター
+    return st === "both" || (st === "p1" && pi === 0) || (st === "p2" && pi === 1);
+  }
   // 一人のときは、自分(1P)だけが対象。保存値が both なら p1、p2 なら off として扱う
   function swapState() {
     if (S.mode !== "solo") return S.swap;
@@ -1015,7 +1021,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   function logPanelHtml(pi) {
     var list = visLog(pi);
     return '<aside class="logpanel" aria-label="変更ログ"><h2><span><span class="who p' + pi + '">' + (pi + 1) + 'P</span>ログ</span>' +
-      (pi === (S.mode !== "solo" && S.role === 1 ? 1 : 0) ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
+      (pi === meIdx() ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
       '</h2><ol class="log">' + logItems(list, false) + "</ol>" +
       (S.mode === "solo" ? '<div class="logtools"><button type="button" class="lt" data-act="undo"' + (canUndo() ? "" : " disabled") + '>↶ 戻す</button>' +
         '<button type="button" class="lt warn" data-act="reset">' + (S.rs ? "待機中…" : "リセット") + '</button></div>' : "") + "</aside>";
@@ -1026,8 +1032,8 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     var count = solo ? 1 : 2;
     var html = "";
     // 二人モード: 左(縦は上)=相手(対面なら180度回転)、右(縦は下)=自分。自分が2Pなら、1Pと2Pの位置が入れ替わる
-    var me = !solo && S.role === 1 ? 1 : 0;
-    var order = solo ? [0] : (me === 1 ? [0, 1] : [1, 0]);
+    var me = meIdx();
+    var order = solo ? [me] : (me === 1 ? [0, 1] : [1, 0]);
     order.forEach(function (i) {
       var oppo = !solo && i !== me;
       html += '<article class="player' + (oppo && S.orient === "face" ? ' flip' : '') + (oppo && S.orient === "same" ? ' lswap' : '') + '">' + counterHtml(i, "life") + counterHtml(i, "food") + counterHtml(i, "mat") + logPanelHtml(i) + "</article>";
@@ -1053,7 +1059,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     $("center").setAttribute("aria-pressed", S.center);
     $("theme-dark").setAttribute("aria-pressed", S.theme === "dark");
     $("theme-light").setAttribute("aria-pressed", S.theme === "light");
-    $("swap").innerHTML = "カウンター位置切り替え<small>" + (swapState() === "off" ? "− / +" : "+ / − " + { both: "1P/2P", p1: "1Pのみ", p2: "2Pのみ" }[swapState()]) + "</small>";
+    $("swap").innerHTML = "カウンター位置切り替え<small>" + (swapState() === "off" ? "− / +" : "+ / − " + { both: "1P/2P", p1: (S.mode === "solo" ? (me + 1) : 1) + "Pのみ", p2: "2Pのみ" }[swapState()]) + "</small>";
     $("swap").setAttribute("aria-pressed", swapState() !== "off");
 
     ["life", "food", "mat"].forEach(function (k) {
@@ -1061,7 +1067,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       if (document.activeElement !== el) el.value = S.start[k];
     });
 
-    var all = visLog().filter(function (e) { return !solo || e.p === 0; });
+    var all = visLog().filter(function (e) { return !solo || e.p === me; });
     $("log-count").textContent = all.length ? all.length + "件" : "";
     $("log").innerHTML = logItems(all, !solo);
 

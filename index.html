@@ -80,7 +80,18 @@ html.rot1 .stage, html.rot2 .stage { padding: 6px; }
 .step:active { background: var(--c); color: var(--panel); }
 
 /* ログのマス */
-.logpanel { order: -1; background: var(--panel); border-radius: 14px; padding: 6px 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.logpanel { order: -1; background: var(--panel); border-radius: 14px; padding: 6px 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
+/* 一人用: ログと、相手の数値の表示を切り替えるボタン(ログのグリッドの右上) */
+.viewbtn { position: absolute; top: 5px; right: 6px; width: 32px; height: 28px; padding: 0; border-radius: 8px; background: transparent; border: 1.5px solid var(--line); color: var(--muted); display: flex; align-items: center; justify-content: center; z-index: 2; }
+.viewbtn svg { width: 18px; height: 18px; display: block; }
+.viewbtn:active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.oppv { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: space-around; gap: 2px; }
+.orow { --c: var(--life); display: flex; align-items: center; gap: 6px; min-height: 0; }
+.orow.food { --c: var(--food); } .orow.mat { --c: var(--mat); }
+.orow .ico { color: var(--c); display: inline-flex; flex: none; }
+.orow .ico svg { width: clamp(14px, 11cqh, 24px); height: clamp(14px, 11cqh, 24px); display: block; }
+.orow .nm { color: var(--muted); font-weight: 800; font-size: clamp(9px, 7cqh, 14px); white-space: nowrap; }
+.orow .num { margin-left: auto; color: var(--c); font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; font-size: clamp(16px, 20cqh, 44px); }
 .logpanel h2 { font-size: 12px; font-weight: 800; margin: 0 0 4px; display: flex; justify-content: space-between; align-items: center; flex: none; color: var(--muted); min-height: 30px; }
 .menu-btn {
   width: 34px; height: 30px; border-radius: 8px; flex: none;
@@ -395,6 +406,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: 0,
       swap: "off", // off / both(二人) / p1(1Pのみ=自分) / p2(2Pのみ=相手)
       start: { life: 10, food: 0, mat: 0 },
+      oppView: false, // 一人用: ログのグリッドに、ログではなく、相手の数値を出す
       role: 0, // 自分の役割: 0=1P / 1=2P / 2=ゲスト(観戦)
       roleRoom: "", // 役割を自動で決めた部屋(同じ部屋に入り直しても、決め直さない)
       dev: newId(), // この端末のID(同期で、操作の持ち主を区別する)
@@ -553,6 +565,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       rotL: cleanRot(p.rotL),
       swap: p.swap === true || p.swap === "both" ? "both" : (p.swap === "p1" || p.swap === "p2" ? p.swap : "off"),
       start: cleanRes(p.start, d.start),
+      oppView: p.oppView === true,
       role: p.role === 1 || p.role === 2 ? p.role : 0,
       roleRoom: typeof p.roleRoom === "string" && /^[0-9a-z]{6}$/.test(p.roleRoom) ? p.roleRoom : "",
       dev: typeof p.dev === "string" && HEX8.test(p.dev) ? p.dev : d.dev,
@@ -588,7 +601,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   discardIndividual();
   function save() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, role: S.role, roleRoom: S.roleRoom, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
+      localStorage.setItem(KEY, JSON.stringify({ mode: S.mode, theme: S.theme, night: S.night, orient: S.orient, center: S.center, extra: S.extra, extraEach: S.extraEach, extraSign: S.extraSign, rotP: S.rotP, rotL: S.rotL, swap: S.swap, start: S.start, oppView: S.oppView, role: S.role, roleRoom: S.roleRoom, dev: S.dev, base: S.base, fold: S.fold, ents: S.ents, sync: S.sync }));
     } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
@@ -1018,11 +1031,21 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
     }).join("");
   }
 
+  // 循環する2つの矢印のアイコン
+  var CYCLE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 11A8.5 8.5 0 0 1 18.2 6.2L20.5 8.5"/><path d="M20.5 3.5v5h-5"/><path d="M20.5 13A8.5 8.5 0 0 1 5.8 17.8L3.5 15.5"/><path d="M3.5 20.5v-5h5"/></svg>';
+  // 一人用: 相手のカウンターの数値だけを出す(ボタンなし)
+  function oppHtml(opp) {
+    return '<div class="oppv">' + ["life", "food", "mat"].map(function (k) {
+      return '<div class="orow ' + k + '"><span class="ico">' + ICONS[k] + '</span><span class="nm">' + KINDS[k] + '</span><span class="num">' + S.players[opp][k] + "</span></div>";
+    }).join("") + "</div>";
+  }
   function logPanelHtml(pi) {
-    var list = visLog(pi);
-    return '<aside class="logpanel" aria-label="変更ログ"><h2><span><span class="who p' + pi + '">' + (pi + 1) + 'P</span>ログ</span>' +
+    var list = visLog(pi), solo = S.mode === "solo", view = solo && S.oppView, opp = 1 - pi;
+    return '<aside class="logpanel" aria-label="' + (view ? "相手の数値" : "変更ログ") + '"><h2><span>' +
+      (view ? '<span class="who p' + opp + '">' + (opp + 1) + 'P</span>の数値' : '<span class="who p' + pi + '">' + (pi + 1) + 'P</span>ログ') + '</span>' +
       (pi === meIdx() ? '<button type="button" class="menu-btn" data-menu aria-label="メニューを開く">⋯</button>' : "") +
-      '</h2><ol class="log">' + logItems(list, false) + "</ol>" +
+      '</h2>' + (solo ? '<button type="button" class="viewbtn" data-view aria-label="ログと相手の数値を切り替える">' + CYCLE_ICON + '</button>' : "") +
+      (view ? oppHtml(opp) : '<ol class="log">' + logItems(list, false) + "</ol>") +
       (S.mode === "solo" ? '<div class="logtools"><button type="button" class="lt" data-act="undo"' + (canUndo() ? "" : " disabled") + '>↶ 戻す</button>' +
         '<button type="button" class="lt warn" data-act="reset">' + (S.rs ? "待機中…" : "リセット") + '</button></div>' : "") + "</aside>";
   }
@@ -1107,6 +1130,7 @@ ol.log::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
       return;
     }
     if (e.target.closest("[data-menu]")) { openMenu(); return; }
+    if (e.target.closest("[data-view]")) { S.oppView = !S.oppView; save(); render(); return; }
     var b = e.target.closest(".step");
     if (!b) return;
     change(+b.dataset.p, b.dataset.k, +b.dataset.d);
